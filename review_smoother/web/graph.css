@@ -1,0 +1,75 @@
+/* Look of Anki's statistics graphs ("Future Due"), light and night mode. */
+
+:root {
+    --area-fill: #000000;
+    --area-fill-opacity: 0.03;
+    --area-stroke: #000000;
+    --area-stroke-opacity: 0.08;
+}
+
+:root[class*="night-mode"] {
+    --area-fill: #ffffff;
+    --area-fill-opacity: 0.08;
+    --area-stroke: #000000;
+    --area-stroke-opacity: 0.18;
+}
+
+body {
+    margin: 0;
+    padding: 0 0.5em;
+    font-size: 12px;
+}
+
+.graph h1 {
+    text-align: center;
+    font-size: 1.3em;
+    margin: 0.6em 0 0;
+}
+
+.graph svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.tick line {
+    stroke: currentColor;
+    opacity: 0.1;
+}
+
+.tick text {
+    fill: currentColor;
+    opacity: 0.5;
+    font-size: 10px;
+}
+
+.cumulative-overlay {
+    pointer-events: none;
+    fill: var(--area-fill);
+    fill-opacity: var(--area-fill-opacity);
+    stroke: var(--area-stroke);
+    stroke-opacity: var(--area-stroke-opacity);
+}
+
+.hover-columns rect {
+    fill: none;
+    pointer-events: all;
+}
+
+.hover-columns rect:hover {
+    fill: gray;
+    opacity: 0.2;
+}
+
+#tooltip {
+    position: absolute;
+    pointer-events: none;
+    opacity: 0;
+    padding: 0.5em 0.7em;
+    border-radius: 5px;
+    background: var(--canvas-elevated, #ffffff);
+    color: var(--fg, #000000);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: opacity 0.15s;
+    white-space: nowrap;
+}

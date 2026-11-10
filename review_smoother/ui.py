@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from anki.collection import Collection, OpChanges, SearchNode
@@ -14,19 +16,19 @@ from aqt.qt import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFontDatabase,
     QFormLayout,
     QLabel,
-    QPlainTextEdit,
     QSpinBox,
     QVBoxLayout,
     qconnect,
 )
 from aqt.utils import tooltip
+from aqt.webview import AnkiWebView
 
 from .smoothing import Card, assign, auto_curve, daily_counts
 
 UNDO_LABEL = "Smooth reviews"
+WEB_DIR = Path(__file__).parent / "web"
 
 
 @dataclass
@@ -72,10 +74,15 @@ def apply_plan(col: Collection, plan: Plan) -> OpChanges:
     return col.merge_undo_entries(undo_start)
 
 
-def format_counts(counts: List[int]) -> str:
-    """Daily counts as digits, grouped by week ("+" means 10 or more)."""
-    digits = "".join(str(n) if n < 10 else "+" for n in counts)
-    return " ".join(digits[i : i + 7] for i in range(0, len(digits), 7))
+def graph_html() -> str:
+    """Page hosting the before/after graphs; filled by `render(...)` in JS."""
+    css = (WEB_DIR / "graph.css").read_text(encoding="utf-8")
+    js = (WEB_DIR / "graph.js").read_text(encoding="utf-8")
+    return (
+        f"<style>{css}</style>"
+        '<div id="charts"></div><div id="tooltip"></div>'
+        f"<script>{js}</script>"
+    )
 
 
 class SmoothDialog(QDialog):
@@ -100,10 +107,9 @@ class SmoothDialog(QDialog):
         form.addRow("Deck:", self.deck)
         form.addRow("Smooth over:", self.horizon)
 
-        self.preview = QPlainTextEdit(readOnly=True)
-        self.preview.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.preview.setMinimumSize(700, 140)
+        self.web = AnkiWebView(self, title="review smoother")
+        self.web.setMinimumSize(760, 560)
+        self.web.stdHtml(graph_html(), js=[], context=self)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
 
@@ -117,7 +123,7 @@ class SmoothDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(self.preview)
+        layout.addWidget(self.web, 1)
         layout.addWidget(self.summary)
         layout.addWidget(self.buttons)
 
@@ -128,11 +134,8 @@ class SmoothDialog(QDialog):
     def refresh(self) -> None:
         self.plan = make_plan(mw.col, self.deck.currentText(), self.horizon.value())
         plan = self.plan
-        self.preview.setPlainText(
-            f"Before  {format_counts(plan.before)}\n"
-            f"After   {format_counts(plan.after)}\n\n"
-            "One digit per day from tomorrow, grouped by week (+ = 10 or more)."
-        )
+        data = {"before": plan.before, "after": plan.after}
+        self.web.eval(f"render({json.dumps(data)});")
         moved = plan.moved
         if not plan.cards:
             text = f"No review card due in the next {plan.horizon} days."
@@ -156,10 +159,15 @@ class SmoothDialog(QDialog):
         if not plan or not plan.moved:
             return
         count = len(plan.moved)
-        CollectionOp(self, lambda col: apply_plan(col, plan)).success(
+        # Parented to the main window: this dialog closes right away.
+        CollectionOp(mw, lambda col: apply_plan(col, plan)).success(
             lambda _: tooltip(f"{count} cards advanced. Undo with Edit > Undo.", parent=mw)
         ).run_in_background()
         self.accept()
+
+    def done(self, result: int) -> None:
+        self.web.cleanup()
+        super().done(result)
 
 
 def open_dialog() -> None:
