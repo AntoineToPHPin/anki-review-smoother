@@ -1,0 +1,1 @@
+**horizon_days** (default `90`): number of days, starting tomorrow, over which upcoming reviews are smoothed. It is the initial value in the smoothing dialog, where it can also be changed for a single run.

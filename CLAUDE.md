@@ -19,7 +19,9 @@ The author discusses in French; everything in the repo (code, comments, README, 
 
 - `review_smoother/` — the add-on folder itself (what gets installed in `addons21/`).
   - `smoothing.py` — pure logic. **Must not import `anki`/`aqt`**, so tests and tools can import it outside Anki.
-  - `__init__.py` — Anki entry point (integration not written yet). When adding Anki imports there, keep `review_smoother.smoothing` importable outside Anki (tests import the package).
+  - `__init__.py` — Anki entry point. Only imports `ui` when `aqt.mw` exists, so the package (and `smoothing`) stays importable outside Anki for tests and tools.
+  - `ui.py` — Tools menu entry + dialog: deck, horizon, before/after preview, Apply. `make_plan()` (read-only) / `apply_plan()` (sets `card.due`, wrapped in `add_custom_undo_entry` + `merge_undo_entries` so it is one undo step, run via `CollectionOp`).
+  - `config.json` / `config.md` — `horizon_days` (default 90).
 - `tests/` — `unittest` only (stdlib, no dependency): `python -m unittest` from the repo root.
 - `tools/simulate.py` — **read-only** simulation on the real collection through AnkiConnect (`localhost:8765`, Anki must be running): `python tools/simulate.py "Deck::Name" [--horizon 90]`. On Windows, prefix with `PYTHONIOENCODING=utf-8` for accented deck names in the output.
 
@@ -27,6 +29,10 @@ The author discusses in French; everything in the repo (code, comments, README, 
 
 - `auto_curve(counts)`: upper concave hull of the cumulative due counts = the lowest non-increasing *fractional* daily rate that never falls behind what is due (so advancing alone is always enough). Rounded **down** to whole cards on the cumulative curve — still ≥ the integer due counts, and moves cards less than rounding up. The alternating rounding (4, 3, 4, 3… / 1, 0, 1, 1, 0…) is then sorted descending into a staircase; sorting only moves cards earlier, so the constraint holds. **Sparse decks (< 1 card/day) end as a block of 1s followed by 0s — the author's explicit choice** (2026-11-10), rather than spacing 1 card every n days or a density that keeps decreasing below 1/day. Downside: on such decks some cards are advanced a large share of their interval (up to ~50% seen on `Informatique::PHP`). Accepted as is: the user picks which decks to smooth, and would not smooth a deck that sparse — so no max-advance limit for now.
 - `assign(cards, target)`: fills days from the last one backwards, each day taking the available cards (due on or after it) with the **shortest interval** first. This minimises the total relative advance Σ (due − new_due) / interval — proven against brute force in the tests. Raises `InfeasibleCurve` if the target would need postponing.
+
+## Local dev install
+
+On the author's Windows machine, `%APPDATA%\Anki2\addons21\review_smoother` is a **junction** to this repo's `review_smoother/` folder: code changes apply after restarting Anki. Anki writes `meta.json` (user config overrides) into it — git-ignored. (`cmd /c mklink /J` fails from Git Bash; use PowerShell `New-Item -ItemType Junction`.)
 
 ## Environment gotchas
 
@@ -36,9 +42,10 @@ The author discusses in French; everything in the repo (code, comments, README, 
 
 ## Open items
 
-- **Anki integration**: menu entry, deck selection dialog, Future-Due-style before/after graph, apply with undo (`CollectionOp`), config (`config.json` + `config.md`, horizon default 90), `manifest.json`.
+- **Preview graph**: replace the text preview (digits per day) with the Future-Due-style before/after graph.
+- **Packaging**: `manifest.json` and `.ankiaddon` build for AnkiWeb.
 - **User-adjusted curves**: input format (e.g. `4x14, 3x28, 2x48`), and what to do when its total differs from the number of cards in the window.
 - **Postponing as an exception**: needed when a user curve, or an early spike, cannot be met by advancing alone.
 - **Window edge**: cards just past the horizon are ignored, so the curve may drop at the very end (e.g. `…2211`); consider letting them be pulled into the window.
 - Sibling cards (same note) may land on the same day; not handled yet.
-- Local dev install: link `review_smoother/` into `%APPDATA%\Anki2\addons21\`.
+- One deck at a time in the dialog; smoothing several decks in one run is not supported yet.

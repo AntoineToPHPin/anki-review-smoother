@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Written by Anki in the add-on folder (user config overrides)
+review_smoother/meta.json

@@ -1,0 +1,172 @@
+"""Anki integration: Tools menu entry and the smoothing dialog."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from anki.collection import Collection, OpChanges, SearchNode
+from anki.utils import ids2str
+from aqt import mw
+from aqt.operations import CollectionOp
+from aqt.qt import (
+    QAction,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFontDatabase,
+    QFormLayout,
+    QLabel,
+    QPlainTextEdit,
+    QSpinBox,
+    QVBoxLayout,
+    qconnect,
+)
+from aqt.utils import tooltip
+
+from .smoothing import Card, assign, auto_curve, daily_counts
+
+UNDO_LABEL = "Smooth reviews"
+
+
+@dataclass
+class Plan:
+    horizon: int
+    cards: List[Card]
+    before: List[int]
+    after: List[int]
+    new_due: Dict[int, int]
+
+    @property
+    def moved(self) -> List[Card]:
+        return [c for c in self.cards if self.new_due[c.id] != c.due]
+
+
+def make_plan(col: Collection, deck: str, horizon: int) -> Plan:
+    """Smoothing of one deck (subdecks included), without changing anything."""
+    today = col.sched.today
+    query = col.build_search_string(
+        SearchNode(deck=deck),
+        "is:review -is:learn -is:suspended -is:buried -deck:filtered",
+        f"prop:due>=1 prop:due<={horizon}",
+    )
+    rows = col.db.all(
+        f"select id, due, ivl from cards where id in {ids2str(col.find_cards(query))}"
+    )
+    cards = [Card(id=cid, due=due - today, interval=ivl) for cid, due, ivl in rows]
+    before = daily_counts((c.due for c in cards), horizon)
+    after = auto_curve(before)
+    return Plan(horizon, cards, before, after, assign(cards, after))
+
+
+def apply_plan(col: Collection, plan: Plan) -> OpChanges:
+    """Write the new due dates as a single undoable step."""
+    undo_start = col.add_custom_undo_entry(UNDO_LABEL)
+    today = col.sched.today
+    cards = []
+    for moved in plan.moved:
+        card = col.get_card(moved.id)
+        card.due = today + plan.new_due[moved.id]
+        cards.append(card)
+    col.update_cards(cards)
+    return col.merge_undo_entries(undo_start)
+
+
+def format_counts(counts: List[int]) -> str:
+    """Daily counts as digits, grouped by week ("+" means 10 or more)."""
+    digits = "".join(str(n) if n < 10 else "+" for n in counts)
+    return " ".join(digits[i : i + 7] for i in range(0, len(digits), 7))
+
+
+class SmoothDialog(QDialog):
+    def __init__(self) -> None:
+        super().__init__(mw)
+        self.setWindowTitle("Review Smoother")
+        self.plan: Optional[Plan] = None
+        config = mw.addonManager.getConfig(__name__) or {}
+
+        self.deck = QComboBox()
+        self.deck.addItems(sorted(d.name for d in mw.col.decks.all_names_and_ids()))
+        current = mw.col.decks.current()["name"]
+        if self.deck.findText(current) >= 0:
+            self.deck.setCurrentText(current)
+
+        self.horizon = QSpinBox()
+        self.horizon.setRange(7, 365)
+        self.horizon.setSuffix(" days")
+        self.horizon.setValue(int(config.get("horizon_days", 90)))
+
+        form = QFormLayout()
+        form.addRow("Deck:", self.deck)
+        form.addRow("Smooth over:", self.horizon)
+
+        self.preview = QPlainTextEdit(readOnly=True)
+        self.preview.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.preview.setMinimumSize(700, 140)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Close
+        )
+        qconnect(self.buttons.rejected, self.reject)
+        qconnect(
+            self.buttons.button(QDialogButtonBox.StandardButton.Apply).clicked, self.apply
+        )
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.preview)
+        layout.addWidget(self.summary)
+        layout.addWidget(self.buttons)
+
+        qconnect(self.deck.currentTextChanged, self.refresh)
+        qconnect(self.horizon.valueChanged, self.refresh)
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.plan = make_plan(mw.col, self.deck.currentText(), self.horizon.value())
+        plan = self.plan
+        self.preview.setPlainText(
+            f"Before  {format_counts(plan.before)}\n"
+            f"After   {format_counts(plan.after)}\n\n"
+            "One digit per day from tomorrow, grouped by week (+ = 10 or more)."
+        )
+        moved = plan.moved
+        if not plan.cards:
+            text = f"No review card due in the next {plan.horizon} days."
+        elif not moved:
+            text = f"{len(plan.cards)} cards, already smooth: nothing to move."
+        else:
+            advances = [c.due - plan.new_due[c.id] for c in moved]
+            relative = max((c.due - plan.new_due[c.id]) / c.interval for c in moved)
+            text = (
+                f"{len(moved)} of {len(plan.cards)} cards will be advanced, by "
+                f"{sum(advances) / len(advances):.1f} days on average (max "
+                f"{max(advances)}). Largest advance relative to the interval: "
+                f"{relative:.0%}."
+            )
+        self.summary.setText(text)
+        apply_button = self.buttons.button(QDialogButtonBox.StandardButton.Apply)
+        apply_button.setEnabled(bool(moved))
+
+    def apply(self) -> None:
+        plan = self.plan
+        if not plan or not plan.moved:
+            return
+        count = len(plan.moved)
+        CollectionOp(self, lambda col: apply_plan(col, plan)).success(
+            lambda _: tooltip(f"{count} cards advanced. Undo with Edit > Undo.", parent=mw)
+        ).run_in_background()
+        self.accept()
+
+
+def open_dialog() -> None:
+    SmoothDialog().exec()
+
+
+def setup_menu() -> None:
+    action = QAction("Review Smoother…", mw)
+    qconnect(action.triggered, open_dialog)
+    mw.form.menuTools.addAction(action)
