@@ -1,0 +1,137 @@
+"""Pure smoothing logic.
+
+This module must not import anything from Anki (`anki`, `aqt`) so that it can
+be unit-tested and simulated outside of Anki.
+
+Days are expressed as offsets from today: 1 is tomorrow, `horizon` is the last
+day of the smoothing window. Today and overdue cards are never touched.
+"""
+
+from __future__ import annotations
+
+import heapq
+import math
+from dataclasses import dataclass
+from fractions import Fraction
+from itertools import accumulate
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+
+@dataclass(frozen=True)
+class Card:
+    id: int
+    due: int  # days from today (1 = tomorrow)
+    interval: int  # current interval, in days
+
+
+class InfeasibleCurve(ValueError):
+    """The target curve cannot be reached by advancing cards only."""
+
+    def __init__(self, day: int) -> None:
+        super().__init__(
+            f"Not enough cards due on or after day {day} to fill the target "
+            f"curve without postponing cards."
+        )
+        self.day = day
+
+
+def daily_counts(dues: Iterable[int], horizon: int) -> List[int]:
+    """Number of cards due on each day of the window (index 0 = day 1)."""
+    counts = [0] * horizon
+    for due in dues:
+        if not 1 <= due <= horizon:
+            raise ValueError(f"Due day {due} is outside the window 1..{horizon}.")
+        counts[due - 1] += 1
+    return counts
+
+
+def _upper_hull(points: Sequence[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Upper convex hull of points sorted by x (monotone chain)."""
+    hull: List[Tuple[int, int]] = []
+    for x, y in points:
+        while len(hull) >= 2:
+            (x1, y1), (x2, y2) = hull[-2], hull[-1]
+            # Drop the middle point if it lies on or below the new chord.
+            if (y2 - y1) * (x - x1) <= (y - y1) * (x2 - x1):
+                hull.pop()
+            else:
+                break
+        hull.append((x, y))
+    return hull
+
+
+def auto_curve(counts: Sequence[int]) -> List[int]:
+    """Smooth descending curve reachable by advancing cards only.
+
+    Guarantees, for the returned curve `t`:
+    - `sum(t) == sum(counts)`: every card stays in the window;
+    - for every day k, cards scheduled on days 1..k >= cards currently due on
+      days 1..k, so no card ever needs to be postponed;
+    - it is a non-increasing staircase, down to a block of 1s then 0s for
+      sparse decks (the author prefers that to spacing 1 card every n days).
+
+    The ideal curve is the lowest concave majorant of the cumulative due
+    counts: its slope is the lowest non-increasing (fractional) daily rate
+    that never falls behind what is due. It is then rounded down to whole
+    cards, which still never falls behind (due counts are whole numbers below
+    the ideal curve) and advances cards as little as possible.
+    """
+    horizon = len(counts)
+    points = [(0, 0)] + list(zip(range(1, horizon + 1), accumulate(counts)))
+    hull = _upper_hull(points)
+
+    # Ideal cumulative curve at each day, rounded down to whole cards: still
+    # >= the integer due counts.
+    planned = [0]
+    for (x1, y1), (x2, y2) in zip(hull, hull[1:]):
+        slope = Fraction(y2 - y1, x2 - x1)
+        for x in range(x1 + 1, x2 + 1):
+            planned.append(math.floor(y1 + slope * (x - x1)))
+    curve = [b - a for a, b in zip(planned, planned[1:])]
+
+    # Rounding alternates (4, 3, 4, 3, 3... or 1, 0, 1, 1, 0...): sort it into
+    # a staircase. Moving cards to earlier days keeps every cumulative
+    # constraint satisfied.
+    return sorted(curve, reverse=True)
+
+
+def assign(cards: Sequence[Card], target: Sequence[int]) -> Dict[int, int]:
+    """New due day for each card so that daily counts match `target` exactly.
+
+    Cards are only ever advanced. Among valid assignments, this minimises the
+    total relative advance, sum((due - new_due) / interval): advancing a card
+    by a few days matters little when its interval is long, a lot when it is
+    short. Days are filled from the last one backwards, each taking the
+    available cards with the shortest intervals (the ones that are the most
+    costly to advance).
+
+    Raises InfeasibleCurve if the target would require postponing cards.
+    """
+    horizon = len(target)
+    if sum(target) != len(cards):
+        raise ValueError(
+            f"Target curve holds {sum(target)} cards, but {len(cards)} cards "
+            f"are due in the window."
+        )
+    by_due: List[List[Card]] = [[] for _ in range(horizon)]
+    for card in cards:
+        if not 1 <= card.due <= horizon:
+            raise ValueError(
+                f"Card {card.id} is due on day {card.due}, outside the window "
+                f"1..{horizon}."
+            )
+        by_due[card.due - 1].append(card)
+
+    available: list = []
+    new_due: Dict[int, int] = {}
+    for day in range(horizon, 0, -1):
+        for card in by_due[day - 1]:
+            # Shortest interval first; then the card due soonest, to keep
+            # each individual move as small as possible.
+            heapq.heappush(available, (card.interval, card.due, card.id))
+        for _ in range(target[day - 1]):
+            if not available:
+                raise InfeasibleCurve(day)
+            _, _, card_id = heapq.heappop(available)
+            new_due[card_id] = day
+    return new_due
