@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import anki.lang
 from anki.collection import Collection, OpChanges, SearchNode
 from anki.utils import ids2str
 from aqt import mw
@@ -26,9 +27,9 @@ from aqt.qt import (
 from aqt.utils import tooltip
 from aqt.webview import AnkiWebView
 
-from .smoothing import POSTPONE_MARGIN, Card, daily_counts, describe_moves, smooth
+from .i18n import Translator
+from .smoothing import POSTPONE_MARGIN, Card, daily_counts, move_stats, smooth
 
-UNDO_LABEL = "Smooth reviews"
 WEB_DIR = Path(__file__).parent / "web"
 
 
@@ -62,9 +63,9 @@ def make_plan(col: Collection, deck: str, horizon: int, allow_postpone: bool) ->
     return Plan(horizon, cards, before, after, new_due)
 
 
-def apply_plan(col: Collection, plan: Plan) -> OpChanges:
+def apply_plan(col: Collection, plan: Plan, undo_label: str) -> OpChanges:
     """Write the new due dates as a single undoable step."""
-    undo_start = col.add_custom_undo_entry(UNDO_LABEL)
+    undo_start = col.add_custom_undo_entry(undo_label)
     today = col.sched.today
     cards = []
     for moved in plan.moved:
@@ -91,6 +92,9 @@ class SmoothDialog(QDialog):
         super().__init__(mw)
         self.setWindowTitle("Review Smoother")
         self.plan: Optional[Plan] = None
+        # Anki's interface language, read when the dialog opens.
+        self.tr = Translator(anki.lang.current_lang)
+        tr = self.tr
         config = mw.addonManager.getConfig(__name__) or {}
 
         self.deck = QComboBox()
@@ -101,18 +105,15 @@ class SmoothDialog(QDialog):
 
         self.horizon = QSpinBox()
         self.horizon.setRange(7, 365)
-        self.horizon.setSuffix(" days")
+        self.horizon.setSuffix(tr("days_suffix"))
         self.horizon.setValue(int(config.get("horizon_days", 90)))
 
-        self.postpone = QCheckBox(
-            "Postpone a few cards when it lowers the start of the curve "
-            f"(by at most {POSTPONE_MARGIN:.0%} of their interval)"
-        )
+        self.postpone = QCheckBox(tr("postpone", margin=tr.percent(POSTPONE_MARGIN)))
         self.postpone.setChecked(bool(config.get("allow_postpone", True)))
 
         form = QFormLayout()
-        form.addRow("Deck:", self.deck)
-        form.addRow("Smooth over:", self.horizon)
+        form.addRow(tr("deck"), self.deck)
+        form.addRow(tr("horizon"), self.horizon)
         form.addRow("", self.postpone)
 
         self.web = AnkiWebView(self, title="review smoother")
@@ -148,16 +149,22 @@ class SmoothDialog(QDialog):
             self.postpone.isChecked(),
         )
         plan = self.plan
-        data = {"before": plan.before, "after": plan.after}
+        tr = self.tr
+        data = {
+            "before": plan.before,
+            "after": plan.after,
+            "strings": tr.graph_strings(),
+        }
         self.web.eval(f"render({json.dumps(data)});")
         moved = plan.moved
         if not plan.cards:
-            text = f"No review card due in the next {plan.horizon} days."
+            text = tr("no_cards", days=plan.horizon)
         elif not moved:
-            text = f"{len(plan.cards)} cards, already smooth: nothing to move."
+            text = tr("already_smooth", count=len(plan.cards))
         else:
-            text = f"{len(moved)} of {len(plan.cards)} cards will move. " + " ".join(
-                describe_moves(plan.cards, plan.new_due)
+            sentences = tr.describe_moves(*move_stats(plan.cards, plan.new_due))
+            text = " ".join(
+                [tr("will_move", count=len(moved), total=len(plan.cards))] + sentences
             )
         self.summary.setText(text)
         apply_button = self.buttons.button(QDialogButtonBox.StandardButton.Apply)
@@ -167,10 +174,11 @@ class SmoothDialog(QDialog):
         plan = self.plan
         if not plan or not plan.moved:
             return
-        count = len(plan.moved)
+        done_message = self.tr("applied", count=len(plan.moved))
+        undo_label = self.tr("undo")
         # Parented to the main window: this dialog closes right away.
-        CollectionOp(mw, lambda col: apply_plan(col, plan)).success(
-            lambda _: tooltip(f"{count} cards moved. Undo with Edit > Undo.", parent=mw)
+        CollectionOp(mw, lambda col: apply_plan(col, plan, undo_label)).success(
+            lambda _: tooltip(done_message, parent=mw)
         ).run_in_background()
         self.accept()
 

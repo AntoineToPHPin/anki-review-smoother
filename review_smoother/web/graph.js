@@ -1,7 +1,8 @@
 // Before/after preview graphs, styled after Anki's "Future Due" statistics
 // graph (written from scratch: Anki's own code is AGPL, this add-on is MIT).
-// Entry point: render({ horizon, before: [...], after: [...] }), where each
-// array holds one count per day, index 0 = tomorrow.
+// Entry point: render({ before: [...], after: [...], strings: {...} }), where
+// each array holds one count per day (index 0 = tomorrow) and `strings` holds
+// the translated labels (see Translator.graph_strings in i18n.py).
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const WIDTH = 600;
@@ -46,8 +47,15 @@ const svgElement = (parent, name, attributes = {}) => {
     return element;
 };
 
-const dayLabel = (day) => (day === 1 ? "Tomorrow" : `In ${day} days`);
-const cardsLabel = (count) => (count === 1 ? "1 card" : `${count} cards`);
+// Translated labels, set by render().
+let strings = {};
+
+const dayLabel = (day) => (day === 1 ? strings.tomorrow : strings.inDays.replace("{days}", day));
+
+const cardsLabel = (count) => {
+    const singular = count === 1 || (count === 0 && strings.zeroIsSingular);
+    return (singular ? strings.cardOne : strings.cardOther).replace("{count}", count);
+};
 
 const tooltip = () => document.getElementById("tooltip");
 
@@ -165,18 +173,20 @@ const renderChart = (container, title, counts, yMax) => {
             y: MARGIN.top,
             height: innerHeight,
         });
-        const html = `${dayLabel(day)}:<br>${cardsLabel(count)}<br>Running total: ${cumulative[index]}`;
+        const html = `${dayLabel(day)}${strings.colon}<br>${cardsLabel(count)}<br>`
+            + `${strings.runningTotal}${strings.colon} ${cumulative[index]}`;
         column.addEventListener("mousemove", (event) => showTooltip(event, html));
         column.addEventListener("mouseout", hideTooltip);
     });
 };
 
 const render = (data) => {
+    strings = data.strings;
     const container = document.getElementById("charts");
     container.innerHTML = "";
     hideTooltip();
     // Same vertical scale on both graphs, so that they compare at a glance.
     const yMax = Math.max(1, ...data.before, ...data.after);
-    renderChart(container, "Before", data.before, yMax);
-    renderChart(container, "After", data.after, yMax);
+    renderChart(container, strings.before, data.before, yMax);
+    renderChart(container, strings.after, data.after, yMax);
 };

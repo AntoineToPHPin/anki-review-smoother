@@ -264,29 +264,34 @@ def even_out(curve: Sequence[int]) -> List[int]:
     return result
 
 
-def describe_moves(cards: Sequence[Card], new_due: Dict[int, int]) -> List[str]:
-    """One sentence for the advanced cards, one for the postponed ones."""
-    sentences = []
-    for verb, moved in (
-        ("advanced", [c for c in cards if new_due[c.id] < c.due]),
-        ("postponed", [c for c in cards if new_due[c.id] > c.due]),
-    ):
+@dataclass(frozen=True)
+class MoveStats:
+    """How far the cards moved in one direction (advanced or postponed)."""
+
+    count: int
+    mean_days: float
+    max_days: int
+    max_share: float  # largest move relative to the card's interval
+
+
+def move_stats(
+    cards: Sequence[Card], new_due: Dict[int, int]
+) -> Tuple[Optional[MoveStats], Optional[MoveStats]]:
+    """Statistics of the advanced cards and of the postponed cards (None if
+    there are none). Wording is left to `i18n`."""
+
+    def stats(moved: List[Card]) -> Optional[MoveStats]:
         if not moved:
-            continue
+            return None
         days = [abs(new_due[c.id] - c.due) for c in moved]
-        share = _percent(max(d / c.interval for d, c in zip(days, moved)))
-        if len(moved) == 1:
-            sentences.append(
-                f"1 card {verb} by {days[0]} day{'' if days[0] == 1 else 's'} "
-                f"({share} of its interval)."
-            )
-        else:
-            sentences.append(
-                f"{len(moved)} cards {verb} by {sum(days) / len(days):.1f} days on "
-                f"average (max {max(days)}, at most {share} of the interval)."
-            )
-    return sentences
+        return MoveStats(
+            count=len(moved),
+            mean_days=sum(days) / len(days),
+            max_days=max(days),
+            max_share=max(d / c.interval for d, c in zip(days, moved)),
+        )
 
-
-def _percent(ratio: float) -> str:
-    return "<1%" if 0 < ratio < 0.005 else f"{ratio:.0%}"
+    return (
+        stats([c for c in cards if new_due[c.id] < c.due]),
+        stats([c for c in cards if new_due[c.id] > c.due]),
+    )

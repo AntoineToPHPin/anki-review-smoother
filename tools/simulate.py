@@ -16,7 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from review_smoother.smoothing import Card, daily_counts, describe_moves, smooth  # noqa: E402
+from review_smoother.i18n import Translator  # noqa: E402
+from review_smoother.smoothing import Card, daily_counts, move_stats, smooth  # noqa: E402
 
 ANKICONNECT_URL = "http://localhost:8765"
 
@@ -62,7 +63,7 @@ def simulate(deck: str, horizon: int, today: int, allow_postpone: bool) -> None:
     if not moved:
         print("  nothing to move")
         return
-    for sentence in describe_moves(cards, new_due):
+    for sentence in Translator("en").describe_moves(*move_stats(cards, new_due)):
         print(f"  {sentence}")
 
 
