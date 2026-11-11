@@ -62,7 +62,8 @@ body {
 }
 
 #tooltip {
-    position: absolute;
+    /* Fixed, so that it never extends the page (and never adds a scrollbar). */
+    position: fixed;
     pointer-events: none;
     opacity: 0;
     padding: 0.5em 0.7em;

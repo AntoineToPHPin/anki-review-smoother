@@ -51,13 +51,25 @@ const cardsLabel = (count) => (count === 1 ? "1 card" : `${count} cards`);
 
 const tooltip = () => document.getElementById("tooltip");
 
+// Next to the cursor, kept inside the visible area: flipped above or to the
+// left of the cursor when there is no room below or to the right.
 const showTooltip = (event, html) => {
     const box = tooltip();
     box.innerHTML = html;
     box.style.opacity = 1;
-    const x = Math.min(event.pageX + 15, document.body.clientWidth - box.offsetWidth - 5);
-    box.style.left = `${x}px`;
-    box.style.top = `${event.pageY + 15}px`;
+    const gap = 15;
+    const width = box.offsetWidth;
+    const height = box.offsetHeight;
+    const viewWidth = document.documentElement.clientWidth;
+    const viewHeight = document.documentElement.clientHeight;
+    const x = event.clientX + gap + width <= viewWidth
+        ? event.clientX + gap
+        : event.clientX - gap - width;
+    const y = event.clientY + gap + height <= viewHeight
+        ? event.clientY + gap
+        : event.clientY - gap - height;
+    box.style.left = `${Math.max(0, x)}px`;
+    box.style.top = `${Math.max(0, y)}px`;
 };
 
 const hideTooltip = () => {
