@@ -193,19 +193,75 @@ def smooth(
     Cards are advanced only (see `auto_curve` and `assign`), unless
     `allow_postpone`: then the peak at the start of the curve is lowered one
     card a day at a time, by postponing cards within their margin, as long as
-    that postpones no more cards than the budget.
+    that postpones no more cards than the budget and creates no steeper step
+    than the advance-only curve has.
+
+    That last rule keeps postponing for isolated bumps (4, 3, 3, 3... becomes
+    3, 3, 3, 3...) and away from steady slopes: capping 18, 17, 17, 16, 15...
+    would turn it into a plateau ending with a cliff (16 x 7 days, then 13).
+
+    Finally, plateaus are evened out (see `even_out`).
     """
-    target = auto_curve(daily_counts((c.due for c in cards), horizon))
+    advance_only = auto_curve(daily_counts((c.due for c in cards), horizon))
+    target = advance_only
     shifted: Sequence[Card] = cards
     if allow_postpone:
         budget = max(1, int(len(cards) * POSTPONE_BUDGET))
-        while target and target[0] > 1:
+        steepest = _steepest_step(advance_only)
+        while target[0] > 1:
             postponed = _postpone_to_cap(cards, target[0] - 1, horizon)
             if postponed is None or len(postponed) > budget:
                 break
-            shifted = [replace(c, due=postponed.get(c.id, c.due)) for c in cards]
-            target = auto_curve(daily_counts((c.due for c in shifted), horizon))
+            candidate = [replace(c, due=postponed.get(c.id, c.due)) for c in cards]
+            lowered = auto_curve(daily_counts((c.due for c in candidate), horizon))
+            if _steepest_step(lowered) > steepest:
+                break
+            shifted, target = candidate, lowered
+    target = even_out(target)
     return target, assign(shifted, target)
+
+
+def _steepest_step(curve: Sequence[int]) -> int:
+    """Largest drop from one day to the next."""
+    return max((a - b for a, b in zip(curve, curve[1:])), default=0)
+
+
+def even_out(curve: Sequence[int]) -> List[int]:
+    """Make the staircase more regular by evening out plateau lengths.
+
+    While a plateau (the days at one level) is at least 2 days longer than the
+    plateaus of both neighbouring levels, it gives one of its days to each:
+    its first day goes up by one card, its last day down by one. For example
+    14, 13, 12, 12, 12, 11, 10 becomes 14, 13, 13, 12, 11, 11, 10.
+
+    That moves one card earlier, so it never requires postponing anything;
+    the total and the descending order are kept. The plateau at the level of
+    the last day is left out, as a neighbour too: its length only reflects
+    where the window ends.
+    """
+    result = list(curve)
+    if not result:
+        return result
+    last_level = result[-1]
+    # Each change moves a card earlier, so this ends; the cap is a safeguard.
+    for _ in range(sum(result) * len(result) + 1):
+        lengths: Dict[int, int] = {}
+        for level in result:
+            lengths[level] = lengths.get(level, 0) + 1
+        uneven = next(
+            (
+                level
+                for level in range(result[0] - 1, last_level + 1, -1)
+                if lengths.get(level, 0) >= lengths.get(level + 1, 0) + 2
+                and lengths.get(level, 0) >= lengths.get(level - 1, 0) + 2
+            ),
+            None,
+        )
+        if uneven is None:
+            break
+        result[result.index(uneven)] += 1
+        result[len(result) - 1 - result[::-1].index(uneven)] -= 1
+    return result
 
 
 def describe_moves(cards: Sequence[Card], new_due: Dict[int, int]) -> List[str]:

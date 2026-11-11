@@ -11,6 +11,7 @@ from review_smoother.smoothing import (
     assign,
     auto_curve,
     daily_counts,
+    even_out,
     smooth,
 )
 
@@ -130,6 +131,51 @@ class AssignTest(unittest.TestCase):
             self.assertAlmostEqual(relative_cost(cards, new_due), best)
 
 
+
+def plateau_lengths(curve):
+    lengths = {}
+    for level in curve:
+        lengths[level] = lengths.get(level, 0) + 1
+    return lengths
+
+
+class EvenOutTest(unittest.TestCase):
+    def test_long_plateau_between_short_ones_is_split(self):
+        # The author's example on Bepo::Caracteres.
+        self.assertEqual(
+            even_out([15, 14, 13, 12, 12, 12, 11, 10, 9]),
+            [15, 14, 13, 13, 12, 11, 11, 10, 9],
+        )
+
+    def test_regular_staircase_is_kept(self):
+        curve = [5, 5, 4, 4, 3, 3, 2, 2, 1, 1]
+        self.assertEqual(even_out(curve), curve)
+
+    def test_plateau_at_the_end_of_the_window_is_left_out(self):
+        # 2 x 46 is much longer than 3 x 37's neighbour 1 x 2, but 1 x 2 only
+        # ends because the window does.
+        curve = [4] * 5 + [3] * 37 + [2] * 46 + [1] * 2
+        self.assertEqual(even_out(curve), curve)
+
+    def test_random_curves_only_move_cards_earlier(self):
+        rng = random.Random(5)
+        for _ in range(300):
+            horizon = rng.randint(1, 90)
+            counts = [rng.choice([0, 1, 2, 3, 5, 12]) for _ in range(horizon)]
+            curve = auto_curve(counts)
+            even = even_out(curve)
+            self.assertEqual(sum(even), sum(curve))
+            self.assertTrue(all(a >= b for a, b in zip(even, even[1:])), even)
+            for evened, original in zip(accumulate(even), accumulate(curve)):
+                self.assertGreaterEqual(evened, original)
+            lengths = plateau_lengths(even)
+            for level in range(even[0] - 1, even[-1] + 1, -1):
+                n = lengths.get(level, 0)
+                self.assertFalse(
+                    n >= lengths.get(level + 1, 0) + 2 and n >= lengths.get(level - 1, 0) + 2,
+                    even,
+                )
+
 def cards_from_counts(counts, interval):
     days = [day for day, n in enumerate(counts, start=1) for _ in range(n)]
     return [Card(id=i, due=day, interval=interval) for i, day in enumerate(days)]
@@ -174,6 +220,16 @@ class SmoothTest(unittest.TestCase):
         cards = cards_from_counts([4] * 5 + [3] * 10, interval=300)
         target, new_due = smooth(cards, 15)
         self.assertEqual(target, [4] * 5 + [3] * 10)
+        self.assertEqual(self.postponed(cards, new_due), [])
+
+    def test_steady_slope_is_not_flattened_into_a_cliff(self):
+        # Postponing 1 card (within budget) would lower the peak to
+        # 29, 29, 29, 27...: a 2-card step on a curve that only ever drops by
+        # 1. Postponing must not do that.
+        counts = [30, 29, 28, 27, 26, 25, 24, 23, 22, 21]
+        cards = cards_from_counts(counts, interval=300)
+        target, new_due = smooth(cards, 10)
+        self.assertEqual(target, counts)
         self.assertEqual(self.postponed(cards, new_due), [])
 
     def test_random_decks_respect_margin_and_budget(self):
