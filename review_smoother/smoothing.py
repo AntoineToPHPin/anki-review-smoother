@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from itertools import accumulate
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -135,3 +135,102 @@ def assign(cards: Sequence[Card], target: Sequence[int]) -> Dict[int, int]:
             _, _, card_id = heapq.heappop(available)
             new_due[card_id] = day
     return new_due
+
+
+# Postponing is the exception: a card may be pushed back by at most this
+# share of its interval...
+POSTPONE_MARGIN = 0.10
+# ...and at most this share of the window's cards (at least one card) may be
+# postponed, only to lower the peak at the start of the curve.
+POSTPONE_BUDGET = 0.01
+
+
+def _postpone_to_cap(
+    cards: Sequence[Card], cap: int, horizon: int
+) -> Optional[Dict[int, int]]:
+    """Postpone cards so that days 1..k never hold more than cap * k cards.
+
+    Returns the new due day of each postponed card, or None if the margins do
+    not allow it. Sweeps forward; on an excess, pushes one day later a card
+    already postponed if possible (to postpone as few cards as possible),
+    otherwise the one with the longest interval; on a tie, the one due the
+    latest, so that it is pushed back by as few days as possible.
+    """
+    latest = {
+        c.id: min(c.due + int(c.interval * POSTPONE_MARGIN), horizon) for c in cards
+    }
+    arriving: List[List[Tuple[Card, bool]]] = [[] for _ in range(horizon + 2)]
+    for card in cards:
+        arriving[card.due].append((card, False))
+
+    candidates: list = []
+    scheduled = 0
+    new_due: Dict[int, int] = {}
+    for day in range(1, horizon + 1):
+        for card, postponed in arriving[day]:
+            scheduled += 1
+            heapq.heappush(
+                candidates, (not postponed, -card.interval, -day, card.id, card)
+            )
+        while scheduled > cap * day:
+            # Cards that cannot go past this day stay where they are.
+            while candidates and latest[candidates[0][-1].id] <= day:
+                heapq.heappop(candidates)
+            if not candidates:
+                return None
+            card = heapq.heappop(candidates)[-1]
+            scheduled -= 1
+            arriving[day + 1].append((card, True))
+            new_due[card.id] = day + 1
+    return new_due
+
+
+def smooth(
+    cards: Sequence[Card], horizon: int, allow_postpone: bool = True
+) -> Tuple[List[int], Dict[int, int]]:
+    """Target curve and new due day of every card.
+
+    Cards are advanced only (see `auto_curve` and `assign`), unless
+    `allow_postpone`: then the peak at the start of the curve is lowered one
+    card a day at a time, by postponing cards within their margin, as long as
+    that postpones no more cards than the budget.
+    """
+    target = auto_curve(daily_counts((c.due for c in cards), horizon))
+    shifted: Sequence[Card] = cards
+    if allow_postpone:
+        budget = max(1, int(len(cards) * POSTPONE_BUDGET))
+        while target and target[0] > 1:
+            postponed = _postpone_to_cap(cards, target[0] - 1, horizon)
+            if postponed is None or len(postponed) > budget:
+                break
+            shifted = [replace(c, due=postponed.get(c.id, c.due)) for c in cards]
+            target = auto_curve(daily_counts((c.due for c in shifted), horizon))
+    return target, assign(shifted, target)
+
+
+def describe_moves(cards: Sequence[Card], new_due: Dict[int, int]) -> List[str]:
+    """One sentence for the advanced cards, one for the postponed ones."""
+    sentences = []
+    for verb, moved in (
+        ("advanced", [c for c in cards if new_due[c.id] < c.due]),
+        ("postponed", [c for c in cards if new_due[c.id] > c.due]),
+    ):
+        if not moved:
+            continue
+        days = [abs(new_due[c.id] - c.due) for c in moved]
+        share = _percent(max(d / c.interval for d, c in zip(days, moved)))
+        if len(moved) == 1:
+            sentences.append(
+                f"1 card {verb} by {days[0]} day{'' if days[0] == 1 else 's'} "
+                f"({share} of its interval)."
+            )
+        else:
+            sentences.append(
+                f"{len(moved)} cards {verb} by {sum(days) / len(days):.1f} days on "
+                f"average (max {max(days)}, at most {share} of the interval)."
+            )
+    return sentences
+
+
+def _percent(ratio: float) -> str:
+    return "<1%" if 0 < ratio < 0.005 else f"{ratio:.0%}"

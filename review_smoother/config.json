@@ -1,3 +1,4 @@
 {
-    "horizon_days": 90
+    "horizon_days": 90,
+    "allow_postpone": true
 }

@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from review_smoother.smoothing import Card, assign, auto_curve, daily_counts  # noqa: E402
+from review_smoother.smoothing import Card, daily_counts, describe_moves, smooth  # noqa: E402
 
 ANKICONNECT_URL = "http://localhost:8765"
 
@@ -50,11 +50,10 @@ def digits(counts) -> str:
     return "".join(str(n) if n < 10 else "+" for n in counts)
 
 
-def simulate(deck: str, horizon: int, today: int) -> None:
+def simulate(deck: str, horizon: int, today: int, allow_postpone: bool) -> None:
     cards = deck_cards(deck, horizon, today)
     before = daily_counts((c.due for c in cards), horizon)
-    target = auto_curve(before)
-    new_due = assign(cards, target)
+    target, new_due = smooth(cards, horizon, allow_postpone)
 
     moved = [c for c in cards if new_due[c.id] != c.due]
     print(f"\n{deck}: {len(cards)} cards over {horizon} days")
@@ -63,22 +62,19 @@ def simulate(deck: str, horizon: int, today: int) -> None:
     if not moved:
         print("  nothing to move")
         return
-    advances = [c.due - new_due[c.id] for c in moved]
-    relative = [(c.due - new_due[c.id]) / c.interval for c in moved]
-    print(
-        f"  {len(moved)} cards advanced, by {sum(advances) / len(moved):.1f} days on average "
-        f"(max {max(advances)}); max advance relative to interval: {max(relative):.0%}"
-    )
+    for sentence in describe_moves(cards, new_due):
+        print(f"  {sentence}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("decks", nargs="+")
     parser.add_argument("--horizon", type=int, default=90)
+    parser.add_argument("--no-postpone", action="store_true", help="advance cards only")
     args = parser.parse_args()
     today = today_day_number(args.horizon)
     for deck in args.decks:
-        simulate(deck, args.horizon, today)
+        simulate(deck, args.horizon, today, not args.no_postpone)
 
 
 if __name__ == "__main__":

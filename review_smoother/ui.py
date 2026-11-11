@@ -13,6 +13,7 @@ from aqt import mw
 from aqt.operations import CollectionOp
 from aqt.qt import (
     QAction,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -25,7 +26,7 @@ from aqt.qt import (
 from aqt.utils import tooltip
 from aqt.webview import AnkiWebView
 
-from .smoothing import Card, assign, auto_curve, daily_counts
+from .smoothing import POSTPONE_MARGIN, Card, daily_counts, describe_moves, smooth
 
 UNDO_LABEL = "Smooth reviews"
 WEB_DIR = Path(__file__).parent / "web"
@@ -44,7 +45,7 @@ class Plan:
         return [c for c in self.cards if self.new_due[c.id] != c.due]
 
 
-def make_plan(col: Collection, deck: str, horizon: int) -> Plan:
+def make_plan(col: Collection, deck: str, horizon: int, allow_postpone: bool) -> Plan:
     """Smoothing of one deck (subdecks included), without changing anything."""
     today = col.sched.today
     query = col.build_search_string(
@@ -57,8 +58,8 @@ def make_plan(col: Collection, deck: str, horizon: int) -> Plan:
     )
     cards = [Card(id=cid, due=due - today, interval=ivl) for cid, due, ivl in rows]
     before = daily_counts((c.due for c in cards), horizon)
-    after = auto_curve(before)
-    return Plan(horizon, cards, before, after, assign(cards, after))
+    after, new_due = smooth(cards, horizon, allow_postpone)
+    return Plan(horizon, cards, before, after, new_due)
 
 
 def apply_plan(col: Collection, plan: Plan) -> OpChanges:
@@ -103,9 +104,16 @@ class SmoothDialog(QDialog):
         self.horizon.setSuffix(" days")
         self.horizon.setValue(int(config.get("horizon_days", 90)))
 
+        self.postpone = QCheckBox(
+            "Postpone a few cards when it lowers the start of the curve "
+            f"(by at most {POSTPONE_MARGIN:.0%} of their interval)"
+        )
+        self.postpone.setChecked(bool(config.get("allow_postpone", True)))
+
         form = QFormLayout()
         form.addRow("Deck:", self.deck)
         form.addRow("Smooth over:", self.horizon)
+        form.addRow("", self.postpone)
 
         self.web = AnkiWebView(self, title="review smoother")
         self.web.setMinimumSize(760, 560)
@@ -129,10 +137,16 @@ class SmoothDialog(QDialog):
 
         qconnect(self.deck.currentTextChanged, self.refresh)
         qconnect(self.horizon.valueChanged, self.refresh)
+        qconnect(self.postpone.toggled, self.refresh)
         self.refresh()
 
     def refresh(self) -> None:
-        self.plan = make_plan(mw.col, self.deck.currentText(), self.horizon.value())
+        self.plan = make_plan(
+            mw.col,
+            self.deck.currentText(),
+            self.horizon.value(),
+            self.postpone.isChecked(),
+        )
         plan = self.plan
         data = {"before": plan.before, "after": plan.after}
         self.web.eval(f"render({json.dumps(data)});")
@@ -142,13 +156,8 @@ class SmoothDialog(QDialog):
         elif not moved:
             text = f"{len(plan.cards)} cards, already smooth: nothing to move."
         else:
-            advances = [c.due - plan.new_due[c.id] for c in moved]
-            relative = max((c.due - plan.new_due[c.id]) / c.interval for c in moved)
-            text = (
-                f"{len(moved)} of {len(plan.cards)} cards will be advanced, by "
-                f"{sum(advances) / len(advances):.1f} days on average (max "
-                f"{max(advances)}). Largest advance relative to the interval: "
-                f"{relative:.0%}."
+            text = f"{len(moved)} of {len(plan.cards)} cards will move. " + " ".join(
+                describe_moves(plan.cards, plan.new_due)
             )
         self.summary.setText(text)
         apply_button = self.buttons.button(QDialogButtonBox.StandardButton.Apply)
@@ -161,7 +170,7 @@ class SmoothDialog(QDialog):
         count = len(plan.moved)
         # Parented to the main window: this dialog closes right away.
         CollectionOp(mw, lambda col: apply_plan(col, plan)).success(
-            lambda _: tooltip(f"{count} cards advanced. Undo with Edit > Undo.", parent=mw)
+            lambda _: tooltip(f"{count} cards moved. Undo with Edit > Undo.", parent=mw)
         ).run_in_background()
         self.accept()
 

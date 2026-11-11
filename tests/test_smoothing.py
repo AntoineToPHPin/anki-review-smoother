@@ -4,11 +4,14 @@ import unittest
 from itertools import accumulate
 
 from review_smoother.smoothing import (
+    POSTPONE_BUDGET,
+    POSTPONE_MARGIN,
     Card,
     InfeasibleCurve,
     assign,
     auto_curve,
     daily_counts,
+    smooth,
 )
 
 
@@ -125,6 +128,68 @@ class AssignTest(unittest.TestCase):
             new_due = assign(cards, target)
             self.assert_valid_assignment(cards, target, new_due)
             self.assertAlmostEqual(relative_cost(cards, new_due), best)
+
+
+def cards_from_counts(counts, interval):
+    days = [day for day, n in enumerate(counts, start=1) for _ in range(n)]
+    return [Card(id=i, due=day, interval=interval) for i, day in enumerate(days)]
+
+
+class SmoothTest(unittest.TestCase):
+    def postponed(self, cards, new_due):
+        return [c for c in cards if new_due[c.id] > c.due]
+
+    def test_without_postponing_it_only_advances(self):
+        cards = cards_from_counts([3] * 6 + [4] + [3] * 13, interval=120)
+        target, new_due = smooth(cards, 20, allow_postpone=False)
+        self.assertEqual(target, auto_curve(daily_counts((c.due for c in cards), 20)))
+        self.assertEqual(target[0], 4)
+        self.assertEqual(self.postponed(cards, new_due), [])
+
+    def test_one_postponed_card_removes_an_isolated_bump(self):
+        # A single extra card on day 7 would otherwise lift tomorrow to 4. It
+        # goes to the lighter day 13: 6 days later, within its 12-day margin.
+        cards = cards_from_counts([3] * 6 + [4] + [3] * 5 + [2] + [3] * 7, interval=120)
+        target, new_due = smooth(cards, 20)
+        self.assertEqual(target, [3] * 20)
+        self.assertEqual(daily_counts(new_due.values(), 20), target)
+        postponed = self.postponed(cards, new_due)
+        self.assertEqual([(c.due, new_due[c.id]) for c in postponed], [(7, 13)])
+
+    def test_short_intervals_cannot_be_postponed(self):
+        # 10% of a 9-day interval rounds down to 0 days of margin.
+        cards = cards_from_counts([3] * 6 + [4] + [3] * 12 + [2], interval=9)
+        target, new_due = smooth(cards, 20)
+        self.assertEqual(target[0], 4)
+        self.assertEqual(self.postponed(cards, new_due), [])
+
+    def test_longest_interval_is_the_one_postponed(self):
+        cards = [Card(1, 1, 50), Card(2, 1, 200), Card(3, 3, 50)]
+        _, new_due = smooth(cards, 3)
+        self.assertEqual(new_due, {1: 1, 2: 2, 3: 3})
+
+    def test_postponing_stops_at_the_budget(self):
+        # Lowering the 4s to 3s would need 5 postponed cards; the budget for
+        # 50 cards is 1.
+        cards = cards_from_counts([4] * 5 + [3] * 10, interval=300)
+        target, new_due = smooth(cards, 15)
+        self.assertEqual(target, [4] * 5 + [3] * 10)
+        self.assertEqual(self.postponed(cards, new_due), [])
+
+    def test_random_decks_respect_margin_and_budget(self):
+        rng = random.Random(4)
+        for _ in range(200):
+            horizon = rng.randint(1, 90)
+            cards = random_cards(rng, rng.randint(0, 400), horizon)
+            target, new_due = smooth(cards, horizon)
+            self.assertEqual(daily_counts(new_due.values(), horizon), target)
+            self.assertTrue(all(a >= b for a, b in zip(target, target[1:])), target)
+            postponed = self.postponed(cards, new_due)
+            self.assertLessEqual(len(postponed), max(1, int(len(cards) * POSTPONE_BUDGET)))
+            for card in postponed:
+                self.assertLessEqual(
+                    new_due[card.id] - card.due, int(card.interval * POSTPONE_MARGIN)
+                )
 
 
 if __name__ == "__main__":
