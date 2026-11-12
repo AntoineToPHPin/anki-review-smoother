@@ -25,6 +25,7 @@ from aqt.qt import (
     QRadioButton,
     QSpinBox,
     QVBoxLayout,
+    Qt,
     qconnect,
 )
 from aqt.utils import tooltip
@@ -113,6 +114,8 @@ class SmoothDialog(QDialog):
     def __init__(self) -> None:
         super().__init__(mw)
         self.setWindowTitle("Review Smoother")
+        # Dialogs have no maximize button by default; the graphs follow the size.
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
         self.plan: Optional[Plan] = None
         # Anki's interface language, read when the dialog opens.
         self.tr = Translator(anki.lang.current_lang)

@@ -14,10 +14,31 @@
     --area-stroke-opacity: 0.18;
 }
 
+/* The two graphs share the height of the page; graph.js draws each one at
+   the size its svg element gets here. */
+html,
+body {
+    height: 100%;
+}
+
 body {
     margin: 0;
     padding: 0 0.5em;
     font-size: 12px;
+    box-sizing: border-box;
+}
+
+#charts {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.graph {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .graph h1 {
@@ -28,8 +49,9 @@ body {
 
 .graph svg {
     display: block;
+    flex: 1;
+    min-height: 0;
     width: 100%;
-    height: auto;
 }
 
 .tick line {

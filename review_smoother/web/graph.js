@@ -5,9 +5,10 @@
 // the translated labels (see Translator.graph_strings in i18n.py).
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const WIDTH = 600;
-const HEIGHT = 200;
 const MARGIN = { top: 20, right: 40, bottom: 25, left: 40 };
+// Below this, a graph is drawn at this size and the page scrolls.
+const MIN_WIDTH = 300;
+const MIN_HEIGHT = 120;
 
 // ColorBrewer "Greens", as used by Anki for this graph: darker for the
 // nearest days (0.7 on the scale) to lighter for the farthest (0.3).
@@ -84,13 +85,21 @@ const hideTooltip = () => {
     tooltip().style.opacity = 0;
 };
 
-const renderChart = (container, title, counts, yMax) => {
+// A titled section with an empty svg element, sized by graph.css.
+const addSection = (container, title) => {
     const section = document.createElement("div");
     section.className = "graph";
     section.innerHTML = `<h1>${title}</h1>`;
     container.appendChild(section);
+    return svgElement(section, "svg");
+};
 
-    const svg = svgElement(section, "svg", { viewBox: `0 0 ${WIDTH} ${HEIGHT}` });
+const renderChart = (svg, counts, yMax) => {
+    // Drawn at the size the page gives it (see graph.css), so that text keeps
+    // its size whatever the window size; redrawn when the window is resized.
+    const WIDTH = Math.max(svg.clientWidth, MIN_WIDTH);
+    const HEIGHT = Math.max(svg.clientHeight, MIN_HEIGHT);
+    svg.setAttribute("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
     const horizon = counts.length;
     const innerWidth = WIDTH - MARGIN.left - MARGIN.right;
     const bottom = HEIGHT - MARGIN.bottom;
@@ -180,13 +189,32 @@ const renderChart = (container, title, counts, yMax) => {
     });
 };
 
+// Last data given to render(), to redraw when the window is resized.
+let lastData = null;
+let resizePending = false;
+
+window.addEventListener("resize", () => {
+    if (!lastData || resizePending) {
+        return;
+    }
+    resizePending = true;
+    requestAnimationFrame(() => {
+        resizePending = false;
+        render(lastData);
+    });
+});
+
 const render = (data) => {
+    lastData = data;
     strings = data.strings;
     const container = document.getElementById("charts");
     container.innerHTML = "";
     hideTooltip();
     // Same vertical scale on both graphs, so that they compare at a glance.
     const yMax = Math.max(1, ...data.before, ...data.after);
-    renderChart(container, strings.before, data.before, yMax);
-    renderChart(container, strings.after, data.after, yMax);
+    // Both sections first, so that each graph is measured at its final size.
+    const beforeSvg = addSection(container, strings.before);
+    const afterSvg = addSection(container, strings.after);
+    renderChart(beforeSvg, data.before, yMax);
+    renderChart(afterSvg, data.after, yMax);
 };
