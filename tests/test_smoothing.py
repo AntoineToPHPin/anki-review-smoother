@@ -1,6 +1,7 @@
 import itertools
 import random
 import unittest
+from dataclasses import replace
 from itertools import accumulate
 
 from review_smoother.smoothing import (
@@ -130,6 +131,57 @@ class AssignTest(unittest.TestCase):
             new_due = assign(cards, target)
             self.assert_valid_assignment(cards, target, new_due)
             self.assertAlmostEqual(relative_cost(cards, new_due), best)
+
+
+class SiblingsTest(unittest.TestCase):
+    # Day 3 keeps its two shortest intervals (R, T); P and Q must move.
+    # P's interval is shorter, so P would take day 2 and Q day 1.
+    def day_three_cards(self):
+        return [
+            Card(10, 3, 50, note=1),  # P
+            Card(11, 3, 90, note=2),  # Q
+            Card(12, 3, 5, note=3),  # R
+            Card(13, 3, 6, note=4),  # T
+        ]
+
+    def test_without_siblings_the_shorter_interval_moves_less(self):
+        cards = self.day_three_cards()
+        new_due = assign(cards, [1, 1, 2])
+        self.assertEqual((new_due[10], new_due[11]), (2, 1))
+
+    def test_card_is_not_moved_next_to_its_sibling(self):
+        # P's sibling S stays on day 2: Q goes there instead.
+        cards = self.day_three_cards() + [Card(1, 2, 10, note=1)]
+        new_due = assign(cards, [1, 2, 2])
+        self.assertEqual((new_due[10], new_due[11], new_due[1]), (1, 2, 2))
+
+    def test_siblings_outside_the_cards_count(self):
+        # Same, with P's sibling in another deck, due on day 2.
+        new_due = assign(self.day_three_cards(), [1, 1, 2], taken={1: {2}})
+        self.assertEqual((new_due[10], new_due[11]), (1, 2))
+
+    def test_siblings_share_a_day_rather_than_fail(self):
+        cards = [Card(1, 2, 10, note=1), Card(2, 3, 10, note=1)]
+        self.assertEqual(assign(cards, [0, 2, 0]), {1: 2, 2: 2})
+
+    def test_siblings_already_on_the_same_day_stay(self):
+        cards = [Card(1, 2, 10, note=1), Card(2, 2, 10, note=1)]
+        self.assertEqual(assign(cards, [0, 2]), {1: 2, 2: 2})
+
+    def test_random_decks_with_siblings(self):
+        rng = random.Random(8)
+        for _ in range(200):
+            horizon = rng.randint(1, 60)
+            cards = [
+                replace(card, note=rng.randint(1, max(1, len(cards) // 3)))
+                for cards in [random_cards(rng, rng.randint(0, 200), horizon)]
+                for card in cards
+            ]
+            taken = {rng.randint(1, 20): {rng.randint(1, horizon)} for _ in range(5)}
+            target = auto_curve(daily_counts((c.due for c in cards), horizon))
+            new_due = assign(cards, target, taken)
+            self.assertEqual(daily_counts(new_due.values(), horizon), target)
+            self.assertTrue(all(new_due[c.id] <= c.due for c in cards))
 
 
 

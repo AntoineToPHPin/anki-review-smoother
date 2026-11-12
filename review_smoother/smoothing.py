@@ -14,7 +14,7 @@ import math
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from itertools import accumulate
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,17 @@ class Card:
     id: int
     due: int  # days from today (1 = tomorrow)
     interval: int  # current interval, in days
+    note: Optional[int] = None  # cards of the same note are siblings
+
+    @property
+    def note_key(self) -> object:
+        """Same value for siblings; a card without a note has no sibling."""
+        return self.note if self.note is not None else ("card", self.id)
+
+
+# Days on which each note already has a card that smoothing does not move
+# (another deck, after the cards looked at...): note id -> days from today.
+Taken = Mapping[int, Set[int]]
 
 
 class InfeasibleCurve(ValueError):
@@ -95,7 +106,9 @@ def auto_curve(counts: Sequence[int]) -> List[int]:
     return sorted(curve, reverse=True)
 
 
-def assign(cards: Sequence[Card], target: Sequence[int]) -> Dict[int, int]:
+def assign(
+    cards: Sequence[Card], target: Sequence[int], taken: Optional[Taken] = None
+) -> Dict[int, int]:
     """New due day for each card so that daily counts match `target` exactly.
 
     Cards are only ever advanced. Among valid assignments, this minimises the
@@ -105,8 +118,29 @@ def assign(cards: Sequence[Card], target: Sequence[int]) -> Dict[int, int]:
     available cards with the shortest intervals (the ones that are the most
     costly to advance).
 
+    Siblings: a card is not moved to a day where a card of the same note is
+    due (before smoothing, in `taken`, or already moved there), as long as
+    another available card can take its place; otherwise it is, rather than
+    failing. Cards that stay on their day are never moved for that, so
+    siblings already due on the same day stay so.
+
     Raises InfeasibleCurve if the target would require postponing cards.
     """
+    taken = taken or {}
+    # Days each note has a card on: before smoothing, then where moved to.
+    due_days: Dict[object, Set[int]] = {}
+    for card in cards:
+        due_days.setdefault(card.note_key, set()).add(card.due)
+    moved_days: Dict[object, Set[int]] = {}
+
+    def has_sibling_on(card: Card, day: int) -> bool:
+        key = card.note_key
+        return (
+            day in due_days.get(key, ())
+            or day in moved_days.get(key, ())
+            or (card.note is not None and day in taken.get(card.note, ()))
+        )
+
     horizon = len(target)
     if sum(target) != len(cards):
         raise ValueError(
@@ -128,12 +162,30 @@ def assign(cards: Sequence[Card], target: Sequence[int]) -> Dict[int, int]:
         for card in by_due[day - 1]:
             # Shortest interval first; then the card due soonest, to keep
             # each individual move as small as possible.
-            heapq.heappush(available, (card.interval, card.due, card.id))
-        for _ in range(target[day - 1]):
-            if not available:
-                raise InfeasibleCurve(day)
-            _, _, card_id = heapq.heappop(available)
-            new_due[card_id] = day
+            heapq.heappush(available, (card.interval, card.due, card.id, card))
+        chosen: List[Card] = []
+        # Cards that would join a sibling on this day, in order of priority.
+        set_aside: list = []
+        while len(chosen) < target[day - 1] and available:
+            entry = heapq.heappop(available)
+            card = entry[-1]
+            if card.due != day and has_sibling_on(card, day):
+                set_aside.append(entry)
+            else:
+                chosen.append(card)
+                if card.due != day:
+                    moved_days.setdefault(card.note_key, set()).add(day)
+        # Not enough other cards: siblings on the same day, rather than fail.
+        while len(chosen) < target[day - 1] and set_aside:
+            card = set_aside.pop(0)[-1]
+            chosen.append(card)
+            moved_days.setdefault(card.note_key, set()).add(day)
+        if len(chosen) < target[day - 1]:
+            raise InfeasibleCurve(day)
+        for entry in set_aside:
+            heapq.heappush(available, entry)
+        for card in chosen:
+            new_due[card.id] = day
     return new_due
 
 
@@ -197,7 +249,10 @@ def lookahead_end(horizon: int) -> int:
 
 
 def smooth(
-    cards: Sequence[Card], horizon: int, allow_postpone: bool = True
+    cards: Sequence[Card],
+    horizon: int,
+    allow_postpone: bool = True,
+    taken: Optional[Taken] = None,
 ) -> Tuple[List[int], Dict[int, int]]:
     """Target curve over the window and new due day of every card.
 
@@ -224,7 +279,9 @@ def smooth(
     Postponing only concerns the cards of the window, and keeps them in it;
     the rules above look at the window part of the curves only.
 
-    Finally, plateaus of the window are evened out (see `even_out`).
+    Finally, plateaus of the window are evened out (see `even_out`), and the
+    cards are picked by `assign`, which keeps siblings apart: `taken` gives
+    the days of the siblings outside `cards`.
     """
     end = lookahead_end(horizon)
     window = [c for c in cards if c.due <= horizon]
@@ -251,7 +308,7 @@ def smooth(
             shifted, target = candidate, lowered
     # Evening out only moves cards earlier, so the whole curve stays reachable.
     target = even_out(target[:horizon]) + target[horizon:]
-    assigned = assign(shifted, target)
+    assigned = assign(shifted, target, taken)
     # Cards left after the window keep their due day.
     new_due = {
         c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards

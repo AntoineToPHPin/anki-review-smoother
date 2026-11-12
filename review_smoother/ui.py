@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import anki.lang
 from anki.collection import Collection, OpChanges, SearchNode
@@ -77,13 +77,35 @@ def make_plan(col: Collection, deck: str, horizon: int, allow_postpone: bool) ->
         "is:review -is:learn -is:suspended -is:buried -deck:filtered",
         f"prop:due>=1 prop:due<={lookahead_end(horizon)}",
     )
-    rows = col.db.all(
-        f"select id, due, ivl from cards where id in {ids2str(col.find_cards(query))}"
-    )
-    cards = [Card(id=cid, due=due - today, interval=ivl) for cid, due, ivl in rows]
+    ids = col.find_cards(query)
+    rows = col.db.all(f"select id, nid, due, ivl from cards where id in {ids2str(ids)}")
+    cards = [
+        Card(id=cid, due=due - today, interval=ivl, note=nid)
+        for cid, nid, due, ivl in rows
+    ]
     before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
-    after, new_due = smooth(cards, horizon, allow_postpone)
+    after, new_due = smooth(cards, horizon, allow_postpone, sibling_days(col, cards))
     return Plan(horizon, cards, before, after, new_due)
+
+
+def sibling_days(col: Collection, cards: List[Card]) -> Dict[int, Set[int]]:
+    """Days (from today) on which the notes of `cards` have other cards due,
+    which smoothing does not move: other decks, due later, etc. Only cards
+    due on a given day count (review, or relearning over days; queues 2 and
+    3), outside filtered decks."""
+    if not cards:
+        return {}
+    today = col.sched.today
+    notes = {c.note for c in cards}
+    rows = col.db.all(
+        f"select nid, due from cards where nid in {ids2str(notes)}"
+        f" and id not in {ids2str(c.id for c in cards)}"
+        " and queue in (2, 3) and odid = 0"
+    )
+    taken: Dict[int, Set[int]] = {}
+    for nid, due in rows:
+        taken.setdefault(nid, set()).add(due - today)
+    return taken
 
 
 def apply_plan(col: Collection, plan: Plan, undo_label: str) -> OpChanges:

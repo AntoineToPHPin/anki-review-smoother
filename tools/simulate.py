@@ -47,10 +47,42 @@ def today_day_number(horizon: int) -> int:
     raise RuntimeError("No review card due in the window.")
 
 
+REVIEW_CARDS = "is:review -is:suspended -is:buried -deck:filtered"
+
+
 def deck_cards(deck: str, horizon: int, today: int):
-    query = f'deck:"{deck}" is:review -is:suspended -is:buried prop:due>=1 prop:due<={horizon}'
+    query = f'deck:"{deck}" {REVIEW_CARDS} prop:due>=1 prop:due<={horizon}'
     infos = anki("cardsInfo", cards=anki("findCards", query=query))
-    return [Card(id=i["cardId"], due=i["due"] - today, interval=i["interval"]) for i in infos]
+    return [
+        Card(id=i["cardId"], due=i["due"] - today, interval=i["interval"], note=i["note"])
+        for i in infos
+    ]
+
+
+def sibling_days(cards, today: int):
+    """Days on which the notes of `cards` have other review cards due (like
+    ui.sibling_days, without relearning cards)."""
+    if not cards:
+        return {}
+    notes = ",".join(str(n) for n in {c.note for c in cards})
+    ids = set(anki("findCards", query=f"nid:{notes} {REVIEW_CARDS}")) - {c.id for c in cards}
+    taken = {}
+    for info in anki("cardsInfo", cards=sorted(ids)) if ids else []:
+        taken.setdefault(info["note"], set()).add(info["due"] - today)
+    return taken
+
+
+def same_day_siblings(due_by_card, notes, taken, horizon: int) -> int:
+    """Cards in the window sharing their day with a sibling."""
+    days = {}
+    for card_id, day in due_by_card.items():
+        if 1 <= day <= horizon:
+            days.setdefault((notes[card_id], day), []).append(card_id)
+    count = 0
+    for (note, day), ids in days.items():
+        if len(ids) > 1 or day in taken.get(note, ()):
+            count += len(ids)
+    return count
 
 
 def digits(counts) -> str:
@@ -59,14 +91,21 @@ def digits(counts) -> str:
 
 def simulate(deck: str, horizon: int, today: int, allow_postpone: bool) -> None:
     cards = deck_cards(deck, lookahead_end(horizon), today)
+    taken = sibling_days(cards, today)
     before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
-    target, new_due = smooth(cards, horizon, allow_postpone)
+    target, new_due = smooth(cards, horizon, allow_postpone, taken)
 
     moved = [c for c in cards if new_due[c.id] != c.due]
     pulled = sum(target) - sum(before)
+    notes = {c.id: c.note for c in cards}
     print(f"\n{deck}: {sum(before)} cards over {horizon} days, {pulled} pulled in")
     print(f"  before {digits(before)}")
     print(f"  after  {digits(target)}")
+    print(
+        "  cards sharing their day with a sibling: "
+        f"{same_day_siblings({c.id: c.due for c in cards}, notes, taken, horizon)} before, "
+        f"{same_day_siblings(new_due, notes, taken, horizon)} after"
+    )
     if not moved:
         print("  nothing to move")
         return
