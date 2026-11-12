@@ -54,6 +54,15 @@ body {
     width: 100%;
 }
 
+/* Zoomed in on the days: the graphs can be dragged sideways. */
+#charts.zoomed svg {
+    cursor: grab;
+}
+
+#charts.zoomed.dragging svg {
+    cursor: grabbing;
+}
+
 .tick line {
     stroke: currentColor;
     opacity: 0.1;
