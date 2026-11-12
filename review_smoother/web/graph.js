@@ -116,19 +116,77 @@ let view = null;
 
 const fullView = (horizon) => ({ start: 1, end: horizon + 1 });
 
-const renderChart = (svg, counts, yMax, id) => {
+// What the graphs show: `horizon`, the days shown (`view`), the shared count
+// scale (`countTop`, `countTicks`), and for `before` and `after` the counts
+// with their running-total scale (`totalTop`, `totalTicks`). `final` is false
+// while animating (fractional counts, no hover columns).
+const sum = (values) => values.reduce((total, value) => total + value, 0);
+const last = (values) => values[values.length - 1];
+
+const scene = (data, shownView) => {
+    // Same vertical scale on both graphs, so that they compare at a glance,
+    // and over all days: zooming only narrows the days shown.
+    const countTicks = niceTicks(Math.max(1, ...data.before, ...data.after), 4);
+    const graph = (counts) => {
+        const totalTicks = niceTicks(sum(counts), 4);
+        return { counts, totalTop: last(totalTicks), totalTicks };
+    };
+    return {
+        horizon: data.before.length,
+        view: shownView,
+        countTop: last(countTicks),
+        countTicks,
+        before: graph(data.before),
+        after: graph(data.after),
+        final: true,
+    };
+};
+
+// Like Anki's statistics graphs: d3 transitions of 600 ms, eased with
+// d3's default cubic in-out.
+const ANIMATION_MS = 600;
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+const lerp = (from, to, t) => from + (to - from) * t;
+
+// Between two scenes, day by day; ticks are those of the scene reached,
+// shown once within the scale.
+const between = (from, to, t) => {
+    const graph = (a, b) => ({
+        counts: Array.from(
+            { length: Math.max(a.counts.length, b.counts.length) },
+            (_, i) => lerp(a.counts[i] || 0, b.counts[i] || 0, t),
+        ),
+        totalTop: lerp(a.totalTop, b.totalTop, t),
+        totalTicks: b.totalTicks,
+    });
+    return {
+        horizon: lerp(from.horizon, to.horizon, t),
+        view: {
+            start: lerp(from.view.start, to.view.start, t),
+            end: lerp(from.view.end, to.view.end, t),
+        },
+        countTop: lerp(from.countTop, to.countTop, t),
+        countTicks: to.countTicks,
+        before: graph(from.before, to.before),
+        after: graph(from.after, to.after),
+        final: false,
+    };
+};
+
+const renderChart = (svg, shown, chart, id) => {
     // Drawn at the size the page gives it (see graph.css), so that text keeps
     // its size whatever the window size; redrawn when the window is resized.
     const WIDTH = Math.max(svg.clientWidth, MIN_WIDTH);
     const HEIGHT = Math.max(svg.clientHeight, MIN_HEIGHT);
     svg.setAttribute("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
     svg.dataset.width = WIDTH;
-    const horizon = counts.length;
+    const { counts, totalTop } = chart;
+    const { horizon, countTop } = shown;
     const innerWidth = WIDTH - MARGIN.left - MARGIN.right;
     const bottom = HEIGHT - MARGIN.bottom;
     const innerHeight = bottom - MARGIN.top;
 
-    const { start, end } = view;
+    const { start, end } = shown.view;
     const x = (day) => MARGIN.left + ((day - start) / (end - start)) * innerWidth;
     const visible = (day) => day + 1 > start && day < end;
 
@@ -137,22 +195,19 @@ const renderChart = (svg, counts, yMax, id) => {
     svgElement(clip, "rect", { x: MARGIN.left, y: 0, width: innerWidth, height: HEIGHT });
     const plot = () => svgElement(svg, "g", { "clip-path": `url(#${id})` });
 
-    const countTicks = niceTicks(yMax, 4);
-    const countTop = countTicks[countTicks.length - 1];
     const y = (value) => bottom - (value / countTop) * innerHeight;
+    const within = (top) => (value) => value <= top * (1 + 1e-9);
 
     const cumulative = [];
     counts.reduce((total, count) => {
         cumulative.push(total + count);
         return total + count;
     }, 0);
-    const total = cumulative[cumulative.length - 1] || 0;
-    const totalTicks = niceTicks(total, 4);
-    const totalTop = totalTicks[totalTicks.length - 1];
+    const total = last(cumulative) || 0;
     const y2 = (value) => bottom - (value / totalTop) * innerHeight;
 
     // Left axis: card counts, with grid lines.
-    countTicks.forEach((value) => {
+    shown.countTicks.filter(within(countTop)).forEach((value) => {
         const tick = svgElement(svg, "g", { class: "tick" });
         svgElement(tick, "line", { x1: MARGIN.left, x2: WIDTH - MARGIN.right, y1: y(value), y2: y(value) });
         svgElement(tick, "text", { x: MARGIN.left - 6, y: y(value), "text-anchor": "end", dy: "0.32em" })
@@ -160,7 +215,7 @@ const renderChart = (svg, counts, yMax, id) => {
     });
 
     // Right axis: running total.
-    totalTicks.forEach((value) => {
+    chart.totalTicks.filter(within(totalTop)).forEach((value) => {
         const tick = svgElement(svg, "g", { class: "tick" });
         svgElement(tick, "text", { x: WIDTH - MARGIN.right + 6, y: y2(value), dy: "0.32em" })
             .textContent = value;
@@ -191,13 +246,17 @@ const renderChart = (svg, counts, yMax, id) => {
     });
 
     // Running total, as a translucent area.
-    if (total) {
+    if (total && totalTop) {
         const points = [[x(1), y2(0)]].concat(cumulative.map((value, index) => [x(index + 2), y2(value)]));
         const line = points.map(([px, py]) => `${px},${py}`).join(" L");
         svgElement(plot(), "path", {
             class: "cumulative-overlay",
-            d: `M${x(1)},${bottom} L${line} L${x(horizon + 1)},${bottom} Z`,
+            d: `M${x(1)},${bottom} L${line} L${x(counts.length + 1)},${bottom} Z`,
         });
+    }
+
+    if (!shown.final) {
+        return;
     }
 
     // Full-height hover columns, one per day.
@@ -227,23 +286,42 @@ const renderChart = (svg, counts, yMax, id) => {
 // Last data given to render(), to redraw when the window is resized or the
 // view changes.
 let lastData = null;
+// Scene last drawn, and the animation towards the current data, if running:
+// { from: scene, start: time }.
+let shown = null;
+let animation = null;
+
+const currentScene = () => {
+    const goal = scene(lastData, view);
+    if (!animation) {
+        return goal;
+    }
+    const t = (performance.now() - animation.start) / ANIMATION_MS;
+    if (t >= 1) {
+        animation = null;
+        return goal;
+    }
+    return between(animation.from, goal, ease(Math.max(t, 0)));
+};
 
 const draw = () => {
-    const data = lastData;
+    shown = currentScene();
     const container = document.getElementById("charts");
     container.innerHTML = "";
-    container.classList.toggle("zoomed", view.end - view.start < data.before.length);
+    container.classList.toggle("zoomed", view.end - view.start < lastData.before.length);
     hideTooltip();
-    // Same vertical scale on both graphs, so that they compare at a glance,
-    // and over all days: zooming only narrows the days shown.
-    const yMax = Math.max(1, ...data.before, ...data.after);
     // Both sections first, so that each graph is measured at its final size.
     const beforeSvg = addSection(container, strings.before);
     const afterSvg = addSection(container, strings.after);
-    renderChart(beforeSvg, data.before, yMax, "clip-before");
-    renderChart(afterSvg, data.after, yMax, "clip-after");
+    renderChart(beforeSvg, shown, shown.before, "clip-before");
+    renderChart(afterSvg, shown, shown.after, "clip-after");
+    if (animation) {
+        requestDraw();
+    }
 };
 
+// New data from Python (deck, horizon, option): animated from what is shown,
+// like Anki's graphs when their period changes.
 const render = (data) => {
     const horizon = data.before.length;
     // A new deck or option keeps the zoom; a new horizon shows everything.
@@ -252,7 +330,12 @@ const render = (data) => {
     }
     lastData = data;
     strings = data.strings;
-    draw();
+    if (shown) {
+        animation = { from: shown, start: performance.now() };
+        requestDraw();
+    } else {
+        draw();
+    }
 };
 
 // Redraw at most once per frame.
@@ -280,6 +363,7 @@ const setView = (start, span) => {
     span = Math.min(Math.max(span, Math.min(MIN_SPAN, horizon)), horizon);
     start = Math.min(Math.max(start, 1), horizon + 1 - span);
     view = { start, end: start + span };
+    animation = null; // zooming follows the mouse, without animation
     requestDraw();
 };
 
@@ -339,6 +423,7 @@ window.addEventListener("mouseup", () => {
 charts.addEventListener("dblclick", () => {
     if (lastData) {
         view = fullView(lastData.before.length);
+        animation = null;
         requestDraw();
     }
 });
