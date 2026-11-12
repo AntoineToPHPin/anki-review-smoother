@@ -27,6 +27,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "Postpone a few cards when it lowers the start of the curve "
             "(by at most {margin} of their interval)"
         ),
+        "zoom_hint": "Mouse wheel: zoom · Drag: move · Double click: show all days",
+        "show_moved": "Show cards to move",
+        "stats_link_tip": "Smooth this workload",
         "no_cards": "No review card due in the next {days} days.",
         "already_smooth_one": "{count} card, already smooth: nothing to move.",
         "already_smooth_other": "{count} cards, already smooth: nothing to move.",
@@ -67,6 +70,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "Reporter quelques cartes quand cela abaisse le début de la courbe "
             "(d’au plus {margin} de leur intervalle)"
         ),
+        "zoom_hint": (
+            f"Molette{NBSP}: zoomer · Glisser{NBSP}: déplacer · "
+            f"Double-clic{NBSP}: afficher tous les jours"
+        ),
+        "show_moved": "Voir les cartes à déplacer",
+        "stats_link_tip": "Lisser cette charge de travail",
         "no_cards": "Aucune carte à réviser dans les {days} prochains jours.",
         "already_smooth_one": f"{{count}} carte, déjà lissée{NBSP}: rien à déplacer.",
         "already_smooth_other": f"{{count}} cartes, déjà lissées{NBSP}: rien à déplacer.",

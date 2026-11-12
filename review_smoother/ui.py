@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import anki.lang
+import aqt
 from anki.collection import Collection, OpChanges, SearchNode
 from anki.utils import ids2str
 from aqt import mw
@@ -28,7 +29,7 @@ from aqt.qt import (
     Qt,
     qconnect,
 )
-from aqt.utils import tooltip
+from aqt.utils import restoreGeom, saveGeom, tooltip
 from aqt.webview import AnkiWebView
 
 from .i18n import Translator
@@ -46,6 +47,11 @@ WEB_DIR = Path(__file__).parent / "web"
 # Shortcuts for the horizon, in days: the periods of the Future Due graph in
 # Anki's Statistics window, except 30 days for a month (Anki uses 31).
 RANGES = (("range_month", 30), ("range_three_months", 90), ("range_year", 365))
+
+# Size and position of the dialog, remembered by Anki between openings.
+GEOMETRY_KEY = "reviewSmoother"
+# Share of the screen taken by the dialog the first time it opens.
+DEFAULT_SCREEN_SHARE = 0.8
 
 
 @dataclass
@@ -133,8 +139,15 @@ def graph_html() -> str:
 
 
 class SmoothDialog(QDialog):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        deck: Optional[str] = None,
+        on_applied: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """`deck`: deck selected at first (default: the current deck).
+        `on_applied`: called once the new due dates are written."""
         super().__init__(mw)
+        self.on_applied = on_applied
         self.setWindowTitle("Review Smoother")
         # Dialogs have no maximize button by default; the graphs follow the size.
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
@@ -146,7 +159,7 @@ class SmoothDialog(QDialog):
 
         self.deck = QComboBox()
         self.deck.addItems(sorted(d.name for d in mw.col.decks.all_names_and_ids()))
-        current = mw.col.decks.current()["name"]
+        current = deck or mw.col.decks.current()["name"]
         if self.deck.findText(current) >= 0:
             self.deck.setCurrentText(current)
 
@@ -179,27 +192,45 @@ class SmoothDialog(QDialog):
         self.web = AnkiWebView(self, title="review smoother")
         self.web.setMinimumSize(760, 560)
         self.web.stdHtml(graph_html(), js=[], context=self)
+        # How to zoom the graphs (see web/graph.js), greyed out.
+        hint = QLabel(tr("zoom_hint"))
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setEnabled(False)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
 
         self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Close
+            QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel
         )
         qconnect(self.buttons.rejected, self.reject)
         qconnect(
             self.buttons.button(QDialogButtonBox.StandardButton.Apply).clicked, self.apply
         )
+        self.show_moved = self.buttons.addButton(
+            tr("show_moved"), QDialogButtonBox.ButtonRole.ActionRole
+        )
+        qconnect(self.show_moved.clicked, self.browse_moved)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self.web, 1)
+        layout.addWidget(hint)
         layout.addWidget(self.summary)
         layout.addWidget(self.buttons)
 
         qconnect(self.deck.currentTextChanged, self.refresh)
         qconnect(self.horizon.valueChanged, self.refresh)
         qconnect(self.postpone.toggled, self.refresh)
+        restoreGeom(self, GEOMETRY_KEY, default_size=self.default_size())
         self.refresh()
+
+    def default_size(self) -> Tuple[int, int]:
+        """Size on first opening: most of the screen the main window is on."""
+        screen = (mw.screen() or self.screen()).availableGeometry()
+        return (
+            int(screen.width() * DEFAULT_SCREEN_SHARE),
+            int(screen.height() * DEFAULT_SCREEN_SHARE),
+        )
 
     def sync_range(self) -> None:
         """Check the shortcut matching the number of days, or none."""
@@ -242,6 +273,14 @@ class SmoothDialog(QDialog):
         self.summary.setText(text)
         apply_button = self.buttons.button(QDialogButtonBox.StandardButton.Apply)
         apply_button.setEnabled(bool(moved))
+        self.show_moved.setEnabled(bool(moved))
+
+    def browse_moved(self) -> None:
+        """Open Anki's Browser on the cards that applying would move."""
+        if not self.plan or not self.plan.moved:
+            return
+        ids = ",".join(str(card.id) for card in self.plan.moved)
+        aqt.dialogs.open("Browser", mw, search=(f"cid:{ids}",))
 
     def apply(self) -> None:
         plan = self.plan
@@ -249,22 +288,37 @@ class SmoothDialog(QDialog):
             return
         done_message = self.tr("applied", count=len(plan.moved))
         undo_label = self.tr("undo")
-        # Parented to the main window: this dialog closes right away.
+        on_applied = self.on_applied
+
+        def success(_: OpChanges) -> None:
+            # Parented to the main window: this dialog closes right away.
+            tooltip(done_message, parent=mw)
+            if on_applied:
+                on_applied()
+
         CollectionOp(mw, lambda col: apply_plan(col, plan, undo_label)).success(
-            lambda _: tooltip(done_message, parent=mw)
+            success
         ).run_in_background()
         self.accept()
 
     def done(self, result: int) -> None:
+        saveGeom(self, GEOMETRY_KEY)
         self.web.cleanup()
         super().done(result)
 
 
-def open_dialog() -> None:
-    SmoothDialog().exec()
+def open_dialog(
+    deck: Optional[str] = None, on_applied: Optional[Callable[[], None]] = None
+) -> None:
+    dialog = SmoothDialog(deck, on_applied)
+    # Blocks the main window only, so that the Browser opened by "Show cards
+    # to move" can be used while the dialog is open.
+    dialog.setWindowModality(Qt.WindowModality.WindowModal)
+    dialog.exec()
 
 
 def setup_menu() -> None:
     action = QAction("Review Smoother…", mw)
-    qconnect(action.triggered, open_dialog)
+    # A lambda: `triggered` passes a `checked` argument that is not a deck.
+    qconnect(action.triggered, lambda: open_dialog())
     mw.form.menuTools.addAction(action)

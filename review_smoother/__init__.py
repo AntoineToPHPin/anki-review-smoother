@@ -11,6 +11,8 @@ except ImportError:  # outside Anki (tests, tools)
     mw = None
 
 if mw is not None:
+    from .stats_link import setup_stats_link
     from .ui import setup_menu
 
     setup_menu()
+    setup_stats_link()
