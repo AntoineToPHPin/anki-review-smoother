@@ -12,6 +12,7 @@ from review_smoother.smoothing import (
     auto_curve,
     daily_counts,
     even_out,
+    lookahead_end,
     smooth,
 )
 
@@ -152,9 +153,44 @@ class EvenOutTest(unittest.TestCase):
         self.assertEqual(even_out(curve), curve)
 
     def test_plateau_at_the_end_of_the_window_is_left_out(self):
-        # 2 x 46 is much longer than 3 x 37's neighbour 1 x 2, but 1 x 2 only
-        # ends because the window does.
-        curve = [4] * 5 + [3] * 37 + [2] * 46 + [1] * 2
+        # 2 x 46 is much longer than 3 x 37, but it only ends because the
+        # window does.
+        curve = [4] * 5 + [3] * 37 + [2] * 46
+        self.assertEqual(even_out(curve), curve)
+
+    def test_jump_and_dip_are_evened_out(self):
+        # The author's remarks on Bepo::Caracteres: 9 x 2 then 8 x 4 is a
+        # jump, 4 x 6 between 5 x 7 and 3 x 9 a dip.
+        def staircase(plateaus):
+            return [level for level, days in plateaus for _ in range(days)]
+
+        curve = staircase([(11, 2), (10, 1), (9, 2), (8, 4), (7, 5), (6, 7), (5, 7), (4, 6), (3, 9)])
+        self.assertEqual(
+            even_out(curve),
+            staircase([(11, 2), (10, 2), (9, 2), (8, 3), (7, 5), (6, 6), (5, 7), (4, 7), (3, 9)]),
+        )
+
+    def test_long_tail_of_ones_gives_days_down_to_zero(self):
+        # The author's request on Bepo::Caracteres: more days at 3 and 2,
+        # fewer at 1, even if days at 0 are left at the end.
+        curve = [4] * 6 + [3] * 7 + [2] * 7 + [1] * 32
+        self.assertEqual(
+            even_out(curve), [4] * 6 + [3] * 11 + [2] * 11 + [1] * 12 + [0] * 12
+        )
+
+    def test_same_when_the_curve_already_ends_with_zeros(self):
+        curve = [3] * 2 + [2] * 20 + [1] * 30 + [0] * 4
+        self.assertEqual(even_out(curve), [3] * 2 + [2] * 23 + [1] * 24 + [0] * 7)
+
+    def test_two_plateaus_never_give_days_to_the_peak(self):
+        # 2 x 40 and 1 x 40 are long, but giving days to the peak's 3 x 5
+        # would advance cards to the busiest days.
+        curve = [3] * 5 + [2] * 40 + [1] * 40
+        self.assertEqual(even_out(curve), curve)
+
+    def test_sparse_deck_of_ones_is_kept(self):
+        # Nothing above the 1s: they are the peak.
+        curve = [1] * 88 + [0] * 2
         self.assertEqual(even_out(curve), curve)
 
     def test_random_curves_only_move_cards_earlier(self):
@@ -169,12 +205,16 @@ class EvenOutTest(unittest.TestCase):
             for evened, original in zip(accumulate(even), accumulate(curve)):
                 self.assertGreaterEqual(evened, original)
             lengths = plateau_lengths(even)
-            for level in range(even[0] - 1, even[-1] + 1, -1):
-                n = lengths.get(level, 0)
-                self.assertFalse(
-                    n >= lengths.get(level + 1, 0) + 2 and n >= lengths.get(level - 1, 0) + 2,
-                    even,
-                )
+            n = lambda level: lengths.get(level, 0)
+            lowest = 1 if even[-1] <= 1 else even[-1] + 2
+            for high in range(even[0] - 1, lowest - 1, -1):
+                for low in range(high, lowest - 1, -1):
+                    if low == high or high + 1 < even[0]:
+                        dip = 2 if low == high else 0 if low == 1 else 1
+                        self.assertFalse(
+                            n(high) >= n(high + 1) + 2 and n(low) >= n(low - 1) + dip,
+                            even,
+                        )
 
 def cards_from_counts(counts, interval):
     days = [day for day, n in enumerate(counts, start=1) for _ in range(n)]
@@ -232,6 +272,15 @@ class SmoothTest(unittest.TestCase):
         self.assertEqual(target, counts)
         self.assertEqual(self.postponed(cards, new_due), [])
 
+    def test_peak_is_not_lowered_into_a_long_plateau(self):
+        # Postponing 1 card (within budget, no steeper step) would give
+        # 4, 4, 4, 4, 4, 3, 2...: five days at the top, then one at 3.
+        counts = [5, 4, 4, 4, 4, 2, 2, 2, 2, 1, 1]
+        cards = cards_from_counts(counts, interval=300)
+        target, new_due = smooth(cards, 11)
+        self.assertEqual(target, [5, 5, 4, 4, 3, 3, 2, 2, 1, 1, 1])
+        self.assertEqual(self.postponed(cards, new_due), [])
+
     def test_random_decks_respect_margin_and_budget(self):
         rng = random.Random(4)
         for _ in range(200):
@@ -246,6 +295,56 @@ class SmoothTest(unittest.TestCase):
                 self.assertLessEqual(
                     new_due[card.id] - card.due, int(card.interval * POSTPONE_MARGIN)
                 )
+
+    def test_random_decks_with_cards_after_the_window(self):
+        rng = random.Random(7)
+        for _ in range(200):
+            horizon = rng.randint(1, 90)
+            cards = random_cards(rng, rng.randint(0, 400), lookahead_end(horizon))
+            target, new_due = smooth(cards, horizon)
+            window = [c for c in cards if c.due <= horizon]
+            self.assertEqual(len(target), horizon)
+            self.assertEqual(
+                daily_counts((d for d in new_due.values() if d <= horizon), horizon),
+                target,
+            )
+            self.assertGreaterEqual(sum(target), len(window))
+            self.assertTrue(all(a >= b for a, b in zip(target, target[1:])), target)
+            for card in cards:
+                if card.due > horizon:
+                    # Pulled into the window, or left where it was.
+                    self.assertTrue(new_due[card.id] == card.due or new_due[card.id] <= horizon)
+                else:
+                    # Postponed cards stay in the window.
+                    self.assertLessEqual(new_due[card.id], horizon)
+            postponed = self.postponed(cards, new_due)
+            self.assertLessEqual(len(postponed), max(1, int(len(window) * POSTPONE_BUDGET)))
+
+
+class WindowEdgeTest(unittest.TestCase):
+    def test_last_empty_days_are_filled_from_after_the_window(self):
+        # One card a day for 88 days, nothing on days 89 and 90, then cards on
+        # days 93 and 96: those two fill days 89 and 90.
+        cards = cards_from_counts([1] * 88 + [0] * 4 + [1, 0, 0, 1], interval=300)
+        target, new_due = smooth(cards, 90)
+        self.assertEqual(target, [1] * 90)
+        moved = sorted((c.due, new_due[c.id]) for c in cards if new_due[c.id] != c.due)
+        self.assertEqual(moved, [(93, 90), (96, 89)])
+
+    def test_same_on_a_shorter_window(self):
+        # 30 days: cards up to day 37 are looked at; days 29 and 30 are filled
+        # at the level of the cards due after the window.
+        cards = cards_from_counts([2] * 28 + [0] * 2 + [2] * 7, interval=300)
+        target, new_due = smooth(cards, 30)
+        self.assertEqual(target, [2] * 30)
+        self.assertEqual(sum(1 for c in cards if new_due[c.id] != c.due), 4)
+
+    def test_cards_after_the_window_are_not_needed(self):
+        # Already smooth up to the end: the cards after the window stay put.
+        cards = cards_from_counts([2] * 20 + [1] * 5, interval=300)
+        target, new_due = smooth(cards, 20)
+        self.assertEqual(target, [2] * 20)
+        self.assertTrue(all(new_due[c.id] == c.due for c in cards))
 
 
 if __name__ == "__main__":

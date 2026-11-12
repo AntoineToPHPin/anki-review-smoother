@@ -17,7 +17,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from review_smoother.i18n import Translator  # noqa: E402
-from review_smoother.smoothing import Card, daily_counts, move_stats, smooth  # noqa: E402
+from review_smoother.smoothing import (  # noqa: E402
+    Card,
+    daily_counts,
+    lookahead_end,
+    move_stats,
+    smooth,
+)
 
 ANKICONNECT_URL = "http://localhost:8765"
 
@@ -52,12 +58,13 @@ def digits(counts) -> str:
 
 
 def simulate(deck: str, horizon: int, today: int, allow_postpone: bool) -> None:
-    cards = deck_cards(deck, horizon, today)
-    before = daily_counts((c.due for c in cards), horizon)
+    cards = deck_cards(deck, lookahead_end(horizon), today)
+    before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
     target, new_due = smooth(cards, horizon, allow_postpone)
 
     moved = [c for c in cards if new_due[c.id] != c.due]
-    print(f"\n{deck}: {len(cards)} cards over {horizon} days")
+    pulled = sum(target) - sum(before)
+    print(f"\n{deck}: {sum(before)} cards over {horizon} days, {pulled} pulled in")
     print(f"  before {digits(before)}")
     print(f"  after  {digits(target)}")
     if not moved:
@@ -71,11 +78,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("decks", nargs="+")
     parser.add_argument("--horizon", type=int, default=90)
-    parser.add_argument("--no-postpone", action="store_true", help="advance cards only")
+    parser.add_argument(
+        "--postpone", action="store_true", help="allow postponing a few cards"
+    )
     args = parser.parse_args()
     today = today_day_number(args.horizon)
     for deck in args.decks:
-        simulate(deck, args.horizon, today, not args.no_postpone)
+        simulate(deck, args.horizon, today, args.postpone)
 
 
 if __name__ == "__main__":

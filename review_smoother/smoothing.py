@@ -185,40 +185,78 @@ def _postpone_to_cap(
     return new_due
 
 
+# The curve is computed over the window plus this share of it, so that the end
+# of the window does not drop just because the cards due right after it are
+# left out: some of them are pulled into the window.
+LOOKAHEAD = 0.25
+
+
+def lookahead_end(horizon: int) -> int:
+    """Last day of the cards that `smooth` may pull into the window."""
+    return horizon + int(horizon * LOOKAHEAD)
+
+
 def smooth(
     cards: Sequence[Card], horizon: int, allow_postpone: bool = True
 ) -> Tuple[List[int], Dict[int, int]]:
-    """Target curve and new due day of every card.
+    """Target curve over the window and new due day of every card.
+
+    `cards` are the cards due from day 1 to `lookahead_end(horizon)`. The curve
+    is computed over that longer period and only its first `horizon` days are
+    applied: the cards it puts in the window are advanced into it, the others
+    after the window keep their due day. So the end of the window holds what
+    smoothing a longer period would give it, instead of dropping because the
+    cards due right after it are left out.
 
     Cards are advanced only (see `auto_curve` and `assign`), unless
     `allow_postpone`: then the peak at the start of the curve is lowered one
     card a day at a time, by postponing cards within their margin, as long as
-    that postpones no more cards than the budget and creates no steeper step
-    than the advance-only curve has.
+    that postpones no more cards than the budget, creates no steeper step
+    than the advance-only curve has, and leaves no top plateau more than one
+    day longer than the plateau below it (see `_top_plateau_too_long`).
 
-    That last rule keeps postponing for isolated bumps (4, 3, 3, 3... becomes
-    3, 3, 3, 3...) and away from steady slopes: capping 18, 17, 17, 16, 15...
-    would turn it into a plateau ending with a cliff (16 x 7 days, then 13).
+    Those last two rules keep postponing for isolated bumps (4, 3, 3, 3...
+    becomes 3, 3, 3, 3...) and away from steady slopes: capping 18, 17, 17,
+    16, 15... would turn it into a plateau ending with a cliff (16 x 7 days,
+    then 13), and capping 18, 17, 16, 16, 16, 14... into a long plateau
+    (16 x 6 days, then 15, 14...).
 
-    Finally, plateaus are evened out (see `even_out`).
+    Postponing only concerns the cards of the window, and keeps them in it;
+    the rules above look at the window part of the curves only.
+
+    Finally, plateaus of the window are evened out (see `even_out`).
     """
-    advance_only = auto_curve(daily_counts((c.due for c in cards), horizon))
+    end = lookahead_end(horizon)
+    window = [c for c in cards if c.due <= horizon]
+    advance_only = auto_curve(daily_counts((c.due for c in cards), end))
     target = advance_only
     shifted: Sequence[Card] = cards
     if allow_postpone:
-        budget = max(1, int(len(cards) * POSTPONE_BUDGET))
-        steepest = _steepest_step(advance_only)
+        budget = max(1, int(len(window) * POSTPONE_BUDGET))
+        steepest = _steepest_step(advance_only[:horizon])
         while target[0] > 1:
-            postponed = _postpone_to_cap(cards, target[0] - 1, horizon)
+            postponed = _postpone_to_cap(window, target[0] - 1, horizon)
             if postponed is None or len(postponed) > budget:
                 break
             candidate = [replace(c, due=postponed.get(c.id, c.due)) for c in cards]
-            lowered = auto_curve(daily_counts((c.due for c in candidate), horizon))
-            if _steepest_step(lowered) > steepest:
+            lowered = auto_curve(daily_counts((c.due for c in candidate), end))
+            # Cards due after the window can hold the peak up (a pile right
+            # after it): postponing then does not lower it.
+            if lowered[0] >= target[0]:
+                break
+            if _steepest_step(lowered[:horizon]) > steepest or _top_plateau_too_long(
+                lowered[:horizon]
+            ):
                 break
             shifted, target = candidate, lowered
-    target = even_out(target)
-    return target, assign(shifted, target)
+    # Evening out only moves cards earlier, so the whole curve stays reachable.
+    target = even_out(target[:horizon]) + target[horizon:]
+    assigned = assign(shifted, target)
+    # Cards left after the window keep their due day.
+    new_due = {
+        c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards
+    }
+    return target[:horizon], new_due
 
 
 def _steepest_step(curve: Sequence[int]) -> int:
@@ -226,42 +264,95 @@ def _steepest_step(curve: Sequence[int]) -> int:
     return max((a - b for a, b in zip(curve, curve[1:])), default=0)
 
 
+def _top_plateau_too_long(curve: Sequence[int]) -> bool:
+    """Whether the first plateau of the curve, as shown (after `even_out`),
+    is more than one day longer than the next one.
+
+    `even_out` never shortens the top plateau, so a peak lowered too far would
+    stay a long block of days at the same level. As in `even_out`, the plateau
+    at the level of the last day is no reference (its length only reflects
+    where the window ends): if it is the top or the next one, any length goes.
+    """
+    shown = even_out(curve)
+    if not shown:
+        return False
+    top = shown.count(shown[0])
+    if top == len(shown) or shown[top] == shown[-1]:
+        return False
+    return top > shown.count(shown[top]) + 1
+
+
 def even_out(curve: Sequence[int]) -> List[int]:
     """Make the staircase more regular by evening out plateau lengths.
 
-    While a plateau (the days at one level) is at least 2 days longer than the
-    plateaus of both neighbouring levels, it gives one of its days to each:
-    its first day goes up by one card, its last day down by one. For example
-    14, 13, 12, 12, 12, 11, 10 becomes 14, 13, 13, 12, 11, 11, 10.
+    Going down the staircase, plateaus (the days at one level) should get
+    longer gradually. A block of plateaus at consecutive levels gives one day
+    to the level above it and one to the level below it (its first day goes
+    up by one card, its last day down by one) when:
+    - its top plateau is at least 2 days longer than the one above it, so
+      that jump shrinks;
+    - its bottom plateau is longer than the one below it (a dip, which then
+      turns into a rise), or at least 2 days longer for a single plateau,
+      which loses 2 days.
+    Plateaus inside the block keep their length. Jumps are handled from the
+    peak down; for each, the shortest block that can absorb it is used.
 
-    That moves one card earlier, so it never requires postponing anything;
-    the total and the descending order are kept. The plateau at the level of
-    the last day is left out, as a neighbour too: its length only reflects
-    where the window ends.
+    Examples: 14, 13, 12, 12, 12, 11, 10 becomes 14, 13, 13, 12, 11, 11, 10
+    (single plateau); in 10 x 1, 9 x 2, 8 x 4, 7 x 5, 6 x 7, 5 x 7, 4 x 6, the
+    block from 8 to 5 takes a day from the jump between 9 and 8 and gives it
+    to the dip at 4.
+
+    When the curve ends at 1 or 0 cards a day, days at 0 are a level like the
+    others, and the plateau of 1s also gives them a day while it is at least
+    as long: they absorb the jumps that no dip can (the author prefers more
+    days at 3 and 2 and fewer at 1, even if it leaves empty days at the end of
+    the window). Otherwise the plateau at the level of the last day is left
+    out, as a neighbour too: its length only reflects where the window ends.
+
+    Each change moves one card earlier, so it never requires postponing
+    anything; the total and the descending order are kept. A block of several
+    plateaus never gives days to the peak's plateau: repeated, that would
+    lengthen the peak a lot (4 x 5, 3 x 37, 2 x 46, 1 x 2 would reach 4 x 22),
+    advancing cards to the busiest days. A single plateau still may, one day
+    at a time (5, 4, 4, 4, 4, 3 becomes 5, 5, 4, 4, 3, 3).
     """
     result = list(curve)
     if not result:
         return result
-    last_level = result[-1]
+    # Lowest level that may give days.
+    lowest = 1 if result[-1] <= 1 else result[-1] + 2
     # Each change moves a card earlier, so this ends; the cap is a safeguard.
     for _ in range(sum(result) * len(result) + 1):
         lengths: Dict[int, int] = {}
         for level in result:
             lengths[level] = lengths.get(level, 0) + 1
-        uneven = next(
+        block = next(
             (
-                level
-                for level in range(result[0] - 1, last_level + 1, -1)
-                if lengths.get(level, 0) >= lengths.get(level + 1, 0) + 2
-                and lengths.get(level, 0) >= lengths.get(level - 1, 0) + 2
+                (high, low)
+                for high in range(result[0] - 1, lowest - 1, -1)
+                for low in range(high, lowest - 1, -1)
+                if (low == high or high + 1 < result[0])
+                and lengths.get(high, 0) >= lengths.get(high + 1, 0) + 2
+                and lengths.get(low, 0) >= lengths.get(low - 1, 0) + _dip(high, low)
             ),
             None,
         )
-        if uneven is None:
+        if block is None:
             break
-        result[result.index(uneven)] += 1
-        result[len(result) - 1 - result[::-1].index(uneven)] -= 1
+        high, low = block
+        result[result.index(high)] += 1
+        result[len(result) - 1 - result[::-1].index(low)] -= 1
     return result
+
+
+def _dip(high: int, low: int) -> int:
+    """How much longer than the plateau below it the bottom plateau of the
+    block high..low must be for `even_out` to use that block."""
+    if low == high:
+        return 2  # a single plateau loses 2 days
+    if low == 1:
+        return 0  # days at 0 absorb what no dip can
+    return 1
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "deck": "Deck:",
         "horizon": "Smooth over:",
         "days_suffix": " days",
+        "range_month": "1 month",
+        "range_three_months": "3 months",
+        "range_year": "1 year",
         "postpone": (
             "Postpone a few cards when it lowers the start of the curve "
             "(by at most {margin} of their interval)"
@@ -57,6 +60,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "deck": f"Paquet{NBSP}:",
         "horizon": f"Lisser sur{NBSP}:",
         "days_suffix": " jours",
+        "range_month": "1 mois",
+        "range_three_months": "3 mois",
+        "range_year": "1 an",
         "postpone": (
             "Reporter quelques cartes quand cela abaisse le début de la courbe "
             "(d’au plus {margin} de leur intervalle)"

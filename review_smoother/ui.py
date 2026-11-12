@@ -14,12 +14,15 @@ from aqt import mw
 from aqt.operations import CollectionOp
 from aqt.qt import (
     QAction,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     qconnect,
@@ -28,9 +31,20 @@ from aqt.utils import tooltip
 from aqt.webview import AnkiWebView
 
 from .i18n import Translator
-from .smoothing import POSTPONE_MARGIN, Card, daily_counts, move_stats, smooth
+from .smoothing import (
+    POSTPONE_MARGIN,
+    Card,
+    daily_counts,
+    lookahead_end,
+    move_stats,
+    smooth,
+)
 
 WEB_DIR = Path(__file__).parent / "web"
+
+# Shortcuts for the horizon, in days: the periods of the Future Due graph in
+# Anki's Statistics window, except 30 days for a month (Anki uses 31).
+RANGES = (("range_month", 30), ("range_three_months", 90), ("range_year", 365))
 
 
 @dataclass
@@ -45,20 +59,28 @@ class Plan:
     def moved(self) -> List[Card]:
         return [c for c in self.cards if self.new_due[c.id] != c.due]
 
+    @property
+    def total(self) -> int:
+        """Cards in the window after smoothing, those pulled into it included."""
+        return sum(self.after)
+
 
 def make_plan(col: Collection, deck: str, horizon: int, allow_postpone: bool) -> Plan:
-    """Smoothing of one deck (subdecks included), without changing anything."""
+    """Smoothing of one deck (subdecks included), without changing anything.
+
+    `cards` also holds the cards due shortly after the window, which smoothing
+    may pull into it (see `lookahead_end`)."""
     today = col.sched.today
     query = col.build_search_string(
         SearchNode(deck=deck),
         "is:review -is:learn -is:suspended -is:buried -deck:filtered",
-        f"prop:due>=1 prop:due<={horizon}",
+        f"prop:due>=1 prop:due<={lookahead_end(horizon)}",
     )
     rows = col.db.all(
         f"select id, due, ivl from cards where id in {ids2str(col.find_cards(query))}"
     )
     cards = [Card(id=cid, due=due - today, interval=ivl) for cid, due, ivl in rows]
-    before = daily_counts((c.due for c in cards), horizon)
+    before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
     after, new_due = smooth(cards, horizon, allow_postpone)
     return Plan(horizon, cards, before, after, new_due)
 
@@ -109,11 +131,24 @@ class SmoothDialog(QDialog):
         self.horizon.setValue(int(config.get("horizon_days", 90)))
 
         self.postpone = QCheckBox(tr("postpone", margin=tr.percent(POSTPONE_MARGIN)))
-        self.postpone.setChecked(bool(config.get("allow_postpone", True)))
+        self.postpone.setChecked(bool(config.get("allow_postpone", False)))
+
+        # A shortcut sets the number of days, which can still be typed in.
+        self.ranges = QButtonGroup(self)
+        horizon_row = QHBoxLayout()
+        for key, days in RANGES:
+            button = QRadioButton(tr(key))
+            self.ranges.addButton(button, days)
+            horizon_row.addWidget(button)
+        horizon_row.addWidget(self.horizon)
+        horizon_row.addStretch()
+        qconnect(self.ranges.idClicked, self.horizon.setValue)
+        qconnect(self.horizon.valueChanged, self.sync_range)
+        self.sync_range()
 
         form = QFormLayout()
         form.addRow(tr("deck"), self.deck)
-        form.addRow(tr("horizon"), self.horizon)
+        form.addRow(tr("horizon"), horizon_row)
         form.addRow("", self.postpone)
 
         self.web = AnkiWebView(self, title="review smoother")
@@ -141,6 +176,19 @@ class SmoothDialog(QDialog):
         qconnect(self.postpone.toggled, self.refresh)
         self.refresh()
 
+    def sync_range(self) -> None:
+        """Check the shortcut matching the number of days, or none."""
+        button = self.ranges.button(self.horizon.value())
+        if button is not None:
+            button.setChecked(True)
+            return
+        checked = self.ranges.checkedButton()
+        if checked is not None:
+            # An exclusive group cannot be left with nothing checked otherwise.
+            self.ranges.setExclusive(False)
+            checked.setChecked(False)
+            self.ranges.setExclusive(True)
+
     def refresh(self) -> None:
         self.plan = make_plan(
             mw.col,
@@ -157,14 +205,14 @@ class SmoothDialog(QDialog):
         }
         self.web.eval(f"render({json.dumps(data)});")
         moved = plan.moved
-        if not plan.cards:
+        if not plan.total:
             text = tr("no_cards", days=plan.horizon)
         elif not moved:
-            text = tr("already_smooth", count=len(plan.cards))
+            text = tr("already_smooth", count=plan.total)
         else:
             sentences = tr.describe_moves(*move_stats(plan.cards, plan.new_due))
             text = " ".join(
-                [tr("will_move", count=len(moved), total=len(plan.cards))] + sentences
+                [tr("will_move", count=len(moved), total=plan.total)] + sentences
             )
         self.summary.setText(text)
         apply_button = self.buttons.button(QDialogButtonBox.StandardButton.Apply)
