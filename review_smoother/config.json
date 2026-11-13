@@ -1,5 +1,7 @@
 {
     "horizon_days": 90,
-    "fill_gaps_only": false,
-    "allow_postpone": false
+    "method": "auto",
+    "allow_postpone": false,
+    "move_ceiling_percent": 5,
+    "decks": {}
 }

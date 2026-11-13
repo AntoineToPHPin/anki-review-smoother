@@ -27,7 +27,36 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "Postpone a few cards when it lowers the start of the curve "
             "(by at most {margin} of their interval)"
         ),
-        "gaps_only": "Only fill the gaps, keeping the current shape of the curve",
+        "method": "Method:",
+        "method_auto": "Smooth into a regular staircase",
+        "method_gaps": "Only fill the gaps, keeping the current shape of the curve",
+        "method_custom": "Follow a custom curve",
+        "curve_title": "Custom curve (remembered for this deck)",
+        "curve_tomorrow": "Cards tomorrow (day 1):",
+        "curve_drop_day2": "Drop from day 1 to day 2:",
+        "curve_drop_day3": "Drop from day 2 to day 3:",
+        "curve_floor": "Long-term reviews:",
+        "curve_strength": "Memory strength:",
+        "curve_slope": "Slope after day 90 (× 10,000):",
+        "curve_hint": (
+            "From day 3 to day 90, the curve goes down towards the long-term "
+            "reviews following Ebbinghaus's forgetting curve, e^(−t / strength); "
+            "after day 90, it goes down in a straight line, by slope / 10,000 "
+            "cards a day."
+        ),
+        "curve_total": "The curve plans {curve} cards over {days} days, for {due} cards due.",
+        "curve_postponed_one": "{count} card will be postponed to right after the period.",
+        "curve_postponed_other": (
+            "{count} cards will be postponed to right after the period."
+        ),
+        "curve_pulled_one": "{count} card due after the period will be advanced into it.",
+        "curve_pulled_other": (
+            "{count} cards due after the period will be advanced into it."
+        ),
+        "curve_short_one": "{count} card is missing: the end of the period stays below the curve.",
+        "curve_short_other": (
+            "{count} cards are missing: the end of the period stays below the curve."
+        ),
         "zoom_hint": "Mouse wheel: zoom · Drag: move · Double click: show all days",
         "show_moved": "Show cards to move",
         "stats_link_tip": "Smooth this workload",
@@ -58,6 +87,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "card_one": "{count} card",
         "card_other": "{count} cards",
         "running_total": "Running total",
+        "added_cards": "Cards added",
+        "removed_cards": "Cards removed",
+        "target_curve": "Target curve",
+        "vs_before": "{diff} compared with before",
         "colon": ":",
     },
     "fr": {
@@ -71,7 +104,43 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "Reporter quelques cartes quand cela abaisse le début de la courbe "
             "(d’au plus {margin} de leur intervalle)"
         ),
-        "gaps_only": "Combler seulement les creux, en gardant la forme actuelle de la courbe",
+        "method": f"Méthode{NBSP}:",
+        "method_auto": "Lisser en escalier régulier",
+        "method_gaps": "Combler seulement les creux, en gardant la forme actuelle de la courbe",
+        "method_custom": "Suivre une courbe personnalisée",
+        "curve_title": "Courbe personnalisée (mémorisée pour ce paquet)",
+        "curve_tomorrow": f"Cartes demain (J1){NBSP}:",
+        "curve_drop_day2": f"Écart entre J1 et J2{NBSP}:",
+        "curve_drop_day3": f"Écart entre J2 et J3{NBSP}:",
+        "curve_floor": f"Révisions à long terme{NBSP}:",
+        "curve_strength": f"Force de la mémoire{NBSP}:",
+        "curve_slope": f"Pente après J90 (× 10{NBSP}000){NBSP}:",
+        "curve_hint": (
+            "De J3 à J90, la courbe descend vers les révisions à long terme "
+            "selon la courbe de l’oubli d’Ebbinghaus, e^(−t / force)"
+            f"{NBSP}; après J90, elle descend en ligne droite, de pente / "
+            f"10{NBSP}000 carte par jour."
+        ),
+        "curve_total": (
+            "La courbe prévoit {curve} cartes sur {days} jours, pour {due} cartes dues."
+        ),
+        "curve_postponed_one": "{count} carte sera reportée juste après la période.",
+        "curve_postponed_other": (
+            "{count} cartes seront reportées juste après la période."
+        ),
+        "curve_pulled_one": (
+            "{count} carte due après la période sera avancée dans celle-ci."
+        ),
+        "curve_pulled_other": (
+            "{count} cartes dues après la période seront avancées dans celle-ci."
+        ),
+        "curve_short_one": (
+            f"Il manque {{count}} carte{NBSP}: la fin de la période restera sous la courbe."
+        ),
+        "curve_short_other": (
+            f"Il manque {{count}} cartes{NBSP}: la fin de la période restera sous "
+            "la courbe."
+        ),
         "zoom_hint": (
             f"Molette{NBSP}: zoomer · Glisser{NBSP}: déplacer · "
             f"Double-clic{NBSP}: afficher tous les jours"
@@ -105,6 +174,10 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "card_one": "{count} carte",
         "card_other": "{count} cartes",
         "running_total": "Total cumulé",
+        "added_cards": "Cartes ajoutées",
+        "removed_cards": "Cartes retirées",
+        "target_curve": "Courbe visée",
+        "vs_before": "{diff} par rapport à avant",
         "colon": f"{NBSP}:",
     },
 }
@@ -163,6 +236,10 @@ class Translator:
             "cardOne": STRINGS[self.lang]["card_one"],
             "cardOther": STRINGS[self.lang]["card_other"],
             "runningTotal": self("running_total"),
+            "addedCards": self("added_cards"),
+            "removedCards": self("removed_cards"),
+            "targetCurve": self("target_curve"),
+            "vsBefore": STRINGS[self.lang]["vs_before"],
             "colon": self("colon"),
             "zeroIsSingular": self.is_singular(0),
         }

@@ -1,10 +1,15 @@
 /* Look of Anki's statistics graphs ("Future Due"), light and night mode. */
 
+/* Differences with the counts before smoothing: blue for cards added, an
+   orange dashed outline for cards removed (told apart by shape too, not
+   only by colour; no red/green against the green bars). */
 :root {
     --area-fill: #000000;
     --area-fill-opacity: 0.03;
     --area-stroke: #000000;
     --area-stroke-opacity: 0.08;
+    --added: #3182bd;
+    --removed: #e6550d;
 }
 
 :root[class*="night-mode"] {
@@ -12,6 +17,8 @@
     --area-fill-opacity: 0.08;
     --area-stroke: #000000;
     --area-stroke-opacity: 0.18;
+    --added: #6baed6;
+    --removed: #fd8d3c;
 }
 
 /* The two graphs share the height of the page; graph.js draws each one at
@@ -80,6 +87,60 @@ body {
     fill-opacity: var(--area-fill-opacity);
     stroke: var(--area-stroke);
     stroke-opacity: var(--area-stroke-opacity);
+}
+
+rect.added {
+    fill: var(--added);
+}
+
+rect.removed {
+    fill: none;
+    stroke: var(--removed);
+    stroke-width: 1;
+    stroke-dasharray: 3 2;
+}
+
+.target-curve {
+    fill: none;
+    stroke: currentColor;
+    stroke-opacity: 0.7;
+    stroke-width: 1.5;
+    pointer-events: none;
+}
+
+.legend {
+    display: flex;
+    justify-content: center;
+    gap: 1.2em;
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+.legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+}
+
+.swatch {
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    box-sizing: border-box;
+}
+
+.swatch.added {
+    background: var(--added);
+}
+
+.swatch.removed {
+    border: 1px dashed var(--removed);
+}
+
+.swatch.target-curve {
+    height: 0;
+    border-top: 1.5px solid currentColor;
+    opacity: 0.7;
 }
 
 .hover-columns rect {

@@ -243,6 +243,11 @@ def _postpone_to_cap(
 LOOKAHEAD = 0.25
 
 
+# Moves up to this share of a card's interval are accepted when that moves
+# fewer cards (see `fewer_moves`); below it, as few cards as possible move.
+MOVE_CEILING = 0.05
+
+
 def lookahead_end(horizon: int) -> int:
     """Last day of the cards that `smooth` may pull into the window."""
     return horizon + int(horizon * LOOKAHEAD)
@@ -253,6 +258,7 @@ def smooth(
     horizon: int,
     allow_postpone: bool = True,
     taken: Optional[Taken] = None,
+    ceiling: float = MOVE_CEILING,
 ) -> Tuple[List[int], Dict[int, int]]:
     """Target curve over the window and new due day of every card.
 
@@ -281,8 +287,9 @@ def smooth(
 
     Finally, plateaus of the window are evened out (see `even_out`), and the
     cards are picked by `assign_in_short_hops` (the smallest largest advance
-    relative to the interval), which keeps siblings apart: `taken` gives
-    the days of the siblings outside `cards`.
+    relative to the interval), then `fewer_moves` (as few cards as possible
+    within the larger of that and `ceiling`), which keep siblings apart:
+    `taken` gives the days of the siblings outside `cards`.
     """
     end = lookahead_end(horizon)
     window = [c for c in cards if c.due <= horizon]
@@ -314,7 +321,9 @@ def smooth(
     new_due = {
         c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards
     }
-    return target[:horizon], new_due
+    # Postponed cards start from their new day; their total move counts.
+    few = fewer_moves(shifted, target[:horizon], new_due, False, taken, ceiling)
+    return target[:horizon], few
 
 
 def levels(counts: Sequence[int]) -> List[int]:
@@ -341,7 +350,10 @@ def levels(counts: Sequence[int]) -> List[int]:
 
 
 def fill_gaps(
-    cards: Sequence[Card], horizon: int, taken: Optional[Taken] = None
+    cards: Sequence[Card],
+    horizon: int,
+    taken: Optional[Taken] = None,
+    ceiling: float = MOVE_CEILING,
 ) -> Tuple[List[int], Dict[int, int]]:
     """Daily counts over the window and new due day of every card, when only
     filling the gaps: the current shape of the curve is kept, and only the
@@ -451,14 +463,177 @@ def fill_gaps(
         on_day[rise].remove(card)
         move(card, step)
 
-    # The curve is set; which cards make it is chosen again, in short hops.
+    # The curve is set; which cards make it is chosen again: short hops, then
+    # fewer cards within the ceiling.
     target = [count(day) for day in range(1, end + 1)]
     assigned = assign_in_short_hops(cards, target, taken)
     # Cards left after the window keep their due day.
     new_due = {
         c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards
     }
-    return target[:horizon], new_due
+    few = fewer_moves(cards, target[:horizon], new_due, False, taken, ceiling)
+    return target[:horizon], few
+
+
+def largest_share(cards: Sequence[Card], new_due: Mapping[int, int]) -> float:
+    """Largest move (advance or postponement) relative to the interval."""
+    return max(
+        (abs(new_due[c.id] - c.due) / max(c.interval, 1) for c in cards),
+        default=0.0,
+    )
+
+
+def _moved(cards: Sequence[Card], new_due: Mapping[int, int]) -> int:
+    return sum(1 for c in cards if new_due[c.id] != c.due)
+
+
+def fewer_moves(
+    cards: Sequence[Card],
+    window_target: Sequence[int],
+    baseline: Dict[int, int],
+    both_ways: bool,
+    taken: Optional[Taken] = None,
+    ceiling: float = MOVE_CEILING,
+) -> Dict[int, int]:
+    """The compromise between few cards moved and short moves.
+
+    `baseline` makes the window hold `window_target` with the smallest
+    largest move (short hops, many cards: see `assign_in_short_hops`). This
+    allows each card to move by up to the larger of that move and `ceiling`
+    (relative to its interval) and, within that, moves as few cards as
+    possible (see `_few_moves`); the baseline's own limit is tried too (often
+    the same largest move with fewer, longer hops). The baseline stays if
+    neither moves fewer cards.
+
+    `new_due` maps: cards left after the window keep their due day, or, due
+    in it, go to the day right after it (`both_ways` only: postponing).
+    """
+    shortest = largest_share(cards, baseline)
+    best = baseline
+    # The greedy pass is not monotonic: longer hops allowed can mean more
+    # cards moved. Both limits are tried; the fewest cards moved wins.
+    for share in sorted({shortest, max(shortest, ceiling)}):
+        few = _few_moves(cards, window_target, share, both_ways, taken)
+        if few is not None and _moved(cards, few) < _moved(cards, best):
+            best = few
+    return best
+
+
+def _few_moves(
+    cards: Sequence[Card],
+    target: Sequence[int],
+    share: float,
+    both_ways: bool,
+    taken: Optional[Taken] = None,
+) -> Optional[Dict[int, int]]:
+    """Days 1..len(target) holding exactly `target` cards, each card moving
+    by at most `share` of its interval, with few cards moved; None if this
+    greedy pass fails.
+
+    Days are filled from the first one. Each keeps its own cards first (the
+    least movable ones, if it has too many). A day short of cards then takes,
+    in this order, cards that have to move anyway: left over from earlier
+    days (postponed, `both_ways` only), from later days holding more than
+    their target, or due after the window when the window needs some (the
+    nearest first); otherwise the **farthest** card it may take from a later
+    day of the window, which leaves that day short in turn, so that a gap is
+    carried to the cards that have to move in as few hops as the share allows.
+    Siblings are kept apart while another card can come.
+    """
+    taken = taken or {}
+    horizon = len(target)
+    reach = {c.id: math.floor(share * max(c.interval, 1) + 1e-9) for c in cards}
+    farthest = max(reach.values(), default=0)
+    own: List[List[Card]] = [[] for _ in range(horizon + 1)]
+    outside: List[Card] = []
+    for card in cards:
+        (own[card.due] if card.due <= horizon else outside).append(card)
+    outside.sort(key=lambda c: (c.due, c.id))
+    pulls_left = max(0, sum(target) - sum(len(day) for day in own))
+    note_days: Dict[object, Set[int]] = {}
+    for card in cards:
+        note_days.setdefault(card.note_key, set()).add(card.due)
+
+    def free(card: Card, day: int, siblings_ok: bool) -> bool:
+        if siblings_ok:
+            return True
+        return day not in note_days.get(card.note_key, ()) and not (
+            card.note is not None and day in taken.get(card.note, ())
+        )
+
+    def from_day(source: int, day: int, siblings_ok: bool) -> Optional[Card]:
+        """The most movable card of `source` that may go to `day`."""
+        fits = [
+            c
+            for c in own[source]
+            if reach[c.id] >= abs(source - day) and free(c, day, siblings_ok)
+        ]
+        return max(fits, key=lambda c: (reach[c.id], c.id), default=None)
+
+    new_due: Dict[int, int] = {}
+    waiting: List[Card] = []
+
+    def pick(day: int, siblings_ok: bool) -> Optional[Card]:
+        # Left over from earlier days: soonest deadline first.
+        fits = [
+            c
+            for c in waiting
+            if c.due + reach[c.id] >= day and free(c, day, siblings_ok)
+        ]
+        if fits:
+            card = min(fits, key=lambda c: (c.due + reach[c.id], c.id))
+            waiting.remove(card)
+            return card
+        # Cards that have to move: the nearest.
+        last = min(horizon, day + farthest)
+        for source in range(day + 1, last + 1):
+            if len(own[source]) > target[source - 1]:
+                card = from_day(source, day, siblings_ok)
+                if card is not None:
+                    own[source].remove(card)
+                    return card
+        nonlocal pulls_left
+        if pulls_left > 0:
+            for card in outside:
+                if card.due - day > farthest:
+                    break
+                if card.due - reach[card.id] <= day and free(card, day, siblings_ok):
+                    outside.remove(card)
+                    pulls_left -= 1
+                    return card
+        # Otherwise the farthest card of the window this day may take.
+        for source in range(last, day, -1):
+            card = from_day(source, day, siblings_ok)
+            if card is not None:
+                own[source].remove(card)
+                return card
+        return None
+
+    for day in range(1, horizon + 1):
+        need = target[day - 1]
+        mine = sorted(own[day], key=lambda c: (reach[c.id], c.id))
+        own[day] = []
+        for card in mine[:need]:
+            new_due[card.id] = day
+        extra = mine[need:]
+        if extra:
+            if not both_ways:
+                return None
+            waiting.extend(extra)
+        for _ in range(need - len(mine[:need])):
+            card = pick(day, False) or pick(day, True)
+            if card is None:
+                return None
+            new_due[card.id] = day
+            note_days.setdefault(card.note_key, set()).add(day)
+        # A card left waiting past its last allowed day would move too far.
+        if any(c.due + reach[c.id] <= day for c in waiting):
+            return None
+    for card in waiting:
+        new_due[card.id] = horizon + 1
+    for card in outside:
+        new_due[card.id] = card.due
+    return new_due
 
 
 def assign_in_short_hops(
@@ -648,6 +823,184 @@ def _dip(high: int, low: int) -> int:
     if low == 1:
         return 0  # days at 0 absorb what no dip can
     return 1
+
+
+@dataclass(frozen=True)
+class CurveSettings:
+    """A custom curve, as in the author's spreadsheet: day 1 holds `tomorrow`
+    cards, day 2 `drop_day2` fewer, day 3 `drop_day3` fewer again; from there
+    the curve decays exponentially (Ebbinghaus's forgetting curve,
+    e^(-t/strength)) towards `floor`, the long-term reviews, reached by day
+    90; after day 90 it goes down in a straight line, by `slope` cards a day.
+    """
+
+    tomorrow: int
+    drop_day2: int
+    drop_day3: int
+    floor: int
+    strength: float
+    slope: float = 0.0
+
+
+# Last day of the exponential part; the straight line starts there.
+EXPONENTIAL_DAYS = 90
+
+
+def custom_curve(settings: CurveSettings, days: int) -> List[int]:
+    """Cards wanted on each of days 1..`days`, with the spreadsheet's
+    formulas:
+    - day 1: tomorrow; day 2: tomorrow - drop_day2;
+    - days 3 to 90: floor + rounded down((tomorrow - drop_day2 - drop_day3 -
+      floor) x e^(-(day - 3) / strength)), so day 3 is tomorrow - drop_day2 -
+      drop_day3;
+    - after day 90: floor - slope x (day - 90), rounded to the nearest.
+    Never below 0 cards.
+    """
+    s = settings
+    above_floor = s.tomorrow - s.drop_day2 - s.drop_day3 - s.floor
+    curve = []
+    for day in range(1, days + 1):
+        if day == 1:
+            value = s.tomorrow
+        elif day == 2:
+            value = s.tomorrow - s.drop_day2
+        elif day <= EXPONENTIAL_DAYS:
+            value = s.floor + math.floor(
+                above_floor * math.exp(-(day - 3) / max(s.strength, 1e-9))
+            )
+        else:
+            # Half up, like the spreadsheet's ROUND on positive values.
+            value = math.floor(s.floor - s.slope * (day - EXPONENTIAL_DAYS) + 0.5)
+        curve.append(max(0, value))
+    return curve
+
+
+def follow_curve(
+    cards: Sequence[Card],
+    horizon: int,
+    curve: Sequence[int],
+    taken: Optional[Taken] = None,
+    ceiling: float = MOVE_CEILING,
+) -> Tuple[List[int], Dict[int, int]]:
+    """Daily counts over the window and new due day of every card, following
+    a given curve (see `custom_curve`) exactly: the window holds `curve[day]`
+    cards on each day.
+
+    `cards` are the cards due from day 1 to `lookahead_end(horizon)`. Cards
+    are advanced where the curve wants more than is due (taking cards due
+    after the window if needed) and postponed where it wants less: the cards
+    left over once the window is full go to the day right after it. If there
+    are not enough cards for the whole curve, its last days are left short.
+
+    Cards are picked as in `assign_in_short_hops` (the smallest largest move,
+    advance or postponement, relative to the interval, in short hops), then
+    `fewer_moves` with `ceiling`; siblings kept apart.
+    """
+    target = list(curve[:horizon]) + [0] * (horizon - len(curve))
+    # Not enough cards: the end of the window stays below the curve.
+    missing = sum(target) - len(cards)
+    for index in range(horizon - 1, -1, -1):
+        if missing <= 0:
+            break
+        cut = min(missing, target[index])
+        target[index] -= cut
+        missing -= cut
+    assigned = assign_both_ways(cards, target, taken)
+    few = fewer_moves(cards, target, assigned, True, taken, ceiling)
+    return daily_counts((day for day in few.values() if day <= horizon), horizon), few
+
+
+def assign_both_ways(
+    cards: Sequence[Card], target: Sequence[int], taken: Optional[Taken] = None
+) -> Dict[int, int]:
+    """New due day for each card so that days 1..len(target) hold exactly
+    `target` cards, with the smallest largest move relative to the interval;
+    cards may be advanced or postponed. Cards not needed in the window stay
+    where they are if due after it, or go to the day right after it.
+
+    As in `assign_in_short_hops`, the share s is searched by bisection: each
+    card may move by at most s times its interval either way; days are filled
+    from the first one, each taking the cards it may take whose last allowed
+    day comes first. Siblings are kept apart, unless the curve cannot be
+    reached that way at all.
+    """
+    taken = taken or {}
+    horizon = len(target)
+    if sum(target) > len(cards):
+        raise ValueError(f"Target holds {sum(target)} cards, only {len(cards)} given.")
+    due_days: Dict[object, Set[int]] = {}
+    for card in cards:
+        due_days.setdefault(card.note_key, set()).add(card.due)
+
+    def attempt(share: float, siblings: bool) -> Optional[Dict[int, int]]:
+        opening: Dict[int, List[Tuple[Card, int]]] = {}
+        for card in cards:
+            reach = math.floor(share * max(card.interval, 1) + 1e-9)
+            earliest = max(1, card.due - reach)
+            if earliest <= horizon:
+                opening.setdefault(earliest, []).append((card, card.due + reach))
+        moved_days: Dict[object, Set[int]] = {}
+        available: list = []
+        new_due: Dict[int, int] = {}
+        for day in range(1, horizon + 1):
+            for card, latest in opening.get(day, ()):
+                heapq.heappush(
+                    available, (latest, card.due, -card.interval, card.id, card)
+                )
+            chosen: List[Card] = []
+            set_aside: list = []
+            while len(chosen) < target[day - 1] and available:
+                entry = heapq.heappop(available)
+                card = entry[-1]
+                key = card.note_key
+                if (
+                    siblings
+                    and card.due != day
+                    and (
+                        day in due_days.get(key, ())
+                        or day in moved_days.get(key, ())
+                        or (card.note is not None and day in taken.get(card.note, ()))
+                    )
+                ):
+                    set_aside.append(entry)
+                else:
+                    chosen.append(card)
+            if len(chosen) < target[day - 1]:
+                return None
+            for entry in set_aside:
+                heapq.heappush(available, entry)
+            for card in chosen:
+                new_due[card.id] = day
+                if card.due != day:
+                    moved_days.setdefault(card.note_key, set()).add(day)
+            # A card left waiting past its last allowed day would move too far.
+            if available and available[0][0] <= day:
+                return None
+        # Left over: due after the window, they stay; due in it, they go to
+        # the day right after it.
+        for card in cards:
+            if card.id not in new_due:
+                new_due[card.id] = max(card.due, horizon + 1)
+        return new_due
+
+    top = max(
+        (max(c.due - 1, horizon + 1 - c.due) / max(c.interval, 1) for c in cards),
+        default=0.0,
+    )
+    for siblings in (True, False):
+        best = attempt(top, siblings)
+        if best is None:
+            continue
+        low, high = 0.0, top
+        for _ in range(40):
+            middle = (low + high) / 2
+            found = attempt(middle, siblings)
+            if found is None:
+                low = middle
+            else:
+                high, best = middle, found
+        return best
+    raise InfeasibleCurve(1)
 
 
 @dataclass(frozen=True)

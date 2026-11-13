@@ -8,12 +8,16 @@ from review_smoother.smoothing import (
     POSTPONE_BUDGET,
     POSTPONE_MARGIN,
     Card,
+    CurveSettings,
     InfeasibleCurve,
     assign,
     auto_curve,
+    custom_curve,
     daily_counts,
     even_out,
     fill_gaps,
+    follow_curve,
+    largest_share,
     levels,
     lookahead_end,
     smooth,
@@ -435,19 +439,29 @@ class FillGapsTest(unittest.TestCase):
         cards = cards_from_counts(counts, interval=300)
         target, new_due = fill_gaps(cards, 90)
         self.assertEqual(target, [2] * 4 + [1] * 86)
-        # In hops of one day (day 5 to 4... day 90 to 89), rather than one
-        # card advanced from day 90 to day 4.
+        # Neither one card from day 90 to day 4 (30% of its interval) nor 86
+        # hops of one day: hops of 15 days, 5% of the interval.
         self.assertEqual(
             self.moved(cards, new_due),
-            [(day, day - 1) for day in range(5, 89)] + [(90, 88), (90, 89)],
+            [(19, 4), (34, 19), (49, 34), (64, 49), (79, 64), (90, 79), (90, 89)],
         )
+
+    def test_without_a_ceiling_the_shortest_largest_move(self):
+        # The short hops need one hop of 2 days (90 -> 88): hops of 2 days
+        # then, half as many cards as hops of one day.
+        counts = [2] * 3 + [1] * 85 + [0, 3]
+        cards = cards_from_counts(counts, interval=300)
+        _, new_due = fill_gaps(cards, 90, ceiling=0)
+        moves = self.moved(cards, new_due)
+        self.assertTrue(all(due - day <= 2 for due, day in moves))
+        self.assertLessEqual(len(moves), 45)
 
     def test_a_bump_lengthens_the_plateau_above_without_a_new_peak(self):
         cards = cards_from_counts([3, 3, 2, 2, 2, 2, 4, 2], interval=50)
         target, new_due = fill_gaps(cards, 8)
         self.assertEqual(target, [3, 3, 3, 3, 2, 2, 2, 2])
-        # Short hops: no card advanced by more than a day.
-        self.assertTrue(all(c.due - new_due[c.id] <= 1 for c in cards))
+        # Within 5% of the interval of 50 days: 2 days at most.
+        self.assertTrue(all(c.due - new_due[c.id] <= 2 for c in cards))
 
     def test_a_card_after_empty_days_goes_to_the_first_empty_day(self):
         # Not after the 2s: the step from 2 to 1 is not below 1.
@@ -516,6 +530,123 @@ class FillGapsTest(unittest.TestCase):
                 ),
             )
             self.assertTrue(all(a >= b for a, b in zip(target, target[1:])))
+
+
+# The author's spreadsheet ("Planification musique.xlsx", 2026-11-12).
+SHEET = CurveSettings(
+    tomorrow=55, drop_day2=4, drop_day3=3, floor=13, strength=19.01, slope=0.0194
+)
+
+
+class CustomCurveTest(unittest.TestCase):
+    def test_same_values_as_the_spreadsheet(self):
+        curve = custom_curve(SHEET, 365)
+        self.assertEqual(curve[:10], [55, 51, 48, 46, 44, 42, 41, 39, 38, 37])
+        self.assertEqual(curve[57:59], [14, 14])
+        self.assertEqual(curve[70:90], [13] * 20)
+        # "Total à un mois", "Total à trois mois", "Total à un an".
+        self.assertEqual(sum(curve[:31]), 1002)
+        self.assertEqual(sum(curve[:90]), 1880)
+        self.assertEqual(sum(curve), 4721)
+        # Straight line after day 90: 13 down to 8 on day 365.
+        self.assertEqual(curve[90], 13)
+        self.assertEqual(curve[-1], 8)
+
+    def test_never_below_zero(self):
+        settings = CurveSettings(5, 1, 1, 1, 5.0, slope=0.5)
+        self.assertEqual(min(custom_curve(settings, 200)), 0)
+
+
+class FollowCurveTest(unittest.TestCase):
+    def test_already_on_the_curve_nothing_moves(self):
+        cards = cards_from_counts([3, 2, 2, 1], interval=50)
+        target, new_due = follow_curve(cards, 4, [3, 2, 2, 1])
+        self.assertEqual(target, [3, 2, 2, 1])
+        self.assertTrue(all(new_due[c.id] == c.due for c in cards))
+
+    def test_surplus_is_postponed_after_the_window(self):
+        # 3 cards tomorrow, the curve wants 2: one goes, in short hops, to
+        # the day after the window.
+        cards = cards_from_counts([3, 2, 2, 2], interval=50)
+        target, new_due = follow_curve(cards, 4, [2, 2, 2, 2])
+        self.assertEqual(target, [2, 2, 2, 2])
+        self.assertTrue(all(abs(new_due[c.id] - c.due) <= 1 for c in cards))
+        self.assertEqual(sum(1 for c in cards if new_due[c.id] == 5), 1)
+
+    def test_missing_cards_come_from_after_the_window(self):
+        cards = cards_from_counts([1, 1, 1, 0, 2], interval=50)
+        target, new_due = follow_curve(cards, 4, [1, 1, 1, 1])
+        self.assertEqual(target, [1, 1, 1, 1])
+        self.assertEqual(sorted(new_due.values()), [1, 2, 3, 4, 5])
+
+    def test_not_enough_cards_leaves_the_end_short(self):
+        cards = cards_from_counts([1, 1], interval=50)
+        target, _ = follow_curve(cards, 4, [2, 1, 1, 1])
+        self.assertEqual(target, [2, 0, 0, 0])
+
+    def test_two_missing_cards_in_a_few_hops(self):
+        # Musique::Paroles de chansons over a year, 2 cards short of the
+        # curve (one missing on day 2): the gap is carried to the cards due
+        # after the window in hops of up to 5% of the interval (15 days),
+        # rather than hundreds of hops of one day.
+        counts = [13] * 365
+        counts[1] -= 1
+        counts[105] -= 1
+        cards = cards_from_counts(counts + [13] * 30, interval=300)
+        target, new_due = follow_curve(cards, 365, [13] * 365)
+        self.assertEqual(target, [13] * 365)
+        moved = [c for c in cards if new_due[c.id] != c.due]
+        self.assertLessEqual(len(moved), 2 * (365 // 15 + 1))
+        self.assertTrue(all(abs(new_due[c.id] - c.due) <= 15 for c in moved))
+
+    def test_always_on_the_curve_when_there_are_enough_cards(self):
+        rng = random.Random(9)
+        for _ in range(100):
+            horizon = rng.randint(3, 40)
+            cards = random_cards(rng, rng.randint(0, 120), lookahead_end(horizon))
+            curve = [rng.randint(0, 4) for _ in range(horizon)]
+            target, new_due = follow_curve(cards, horizon, curve)
+            if len(cards) >= sum(curve):
+                self.assertEqual(target, curve)
+            self.assertEqual(len(new_due), len(cards))
+            # Cards left after the window never come back before it ends.
+            for c in cards:
+                if new_due[c.id] > horizon:
+                    self.assertEqual(new_due[c.id], max(c.due, horizon + 1))
+
+
+class FewerMovesTest(unittest.TestCase):
+    def test_compromise_on_random_decks(self):
+        # Same curve; moves within the larger of the short hops' largest
+        # move and the ceiling; never more cards moved than the short hops.
+        rng = random.Random(11)
+        for _ in range(60):
+            horizon = rng.randint(5, 60)
+            cards = random_cards(rng, rng.randint(1, 150), lookahead_end(horizon))
+            for method in ("smooth", "gaps", "curve"):
+                if method == "smooth":
+                    run = lambda c: smooth(cards, horizon, False, ceiling=c)  # noqa: E731
+                elif method == "gaps":
+                    run = lambda c: fill_gaps(cards, horizon, ceiling=c)  # noqa: E731
+                else:
+                    curve = [rng.randint(0, 4) for _ in range(horizon)]
+                    run = lambda c: follow_curve(cards, horizon, curve, ceiling=c)  # noqa: E731
+                hops_target, hops = run(0)
+                target, new_due = run(0.05)
+                self.assertEqual(target, hops_target)
+                self.assertEqual(
+                    target,
+                    daily_counts((d for d in new_due.values() if d <= horizon), horizon),
+                )
+                self.assertLessEqual(
+                    largest_share(cards, new_due),
+                    max(largest_share(cards, hops), 0.05) + 1e-9,
+                )
+                moved = sum(1 for c in cards if new_due[c.id] != c.due)
+                hop_moved = sum(1 for c in cards if hops[c.id] != c.due)
+                self.assertLessEqual(moved, hop_moved)
+                if method != "curve":
+                    self.assertTrue(all(new_due[c.id] <= c.due for c in cards))
 
 
 if __name__ == "__main__":

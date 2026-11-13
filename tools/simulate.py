@@ -12,15 +12,20 @@ import argparse
 import json
 import sys
 import urllib.request
+from typing import Optional
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from review_smoother.i18n import Translator  # noqa: E402
 from review_smoother.smoothing import (  # noqa: E402
+    MOVE_CEILING,
     Card,
+    CurveSettings,
+    custom_curve,
     daily_counts,
     fill_gaps,
+    follow_curve,
     lookahead_end,
     move_stats,
     smooth,
@@ -91,20 +96,35 @@ def digits(counts) -> str:
 
 
 def simulate(
-    deck: str, horizon: int, today: int, allow_postpone: bool, gaps_only: bool = False
+    deck: str,
+    horizon: int,
+    today: int,
+    allow_postpone: bool,
+    gaps_only: bool = False,
+    settings: Optional[CurveSettings] = None,
+    ceiling: float = MOVE_CEILING,
 ) -> None:
     cards = deck_cards(deck, lookahead_end(horizon), today)
     taken = sibling_days(cards, today)
     before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
-    if gaps_only:
-        target, new_due = fill_gaps(cards, horizon, taken)
+    if settings is not None:
+        curve = custom_curve(settings, horizon)
+        target, new_due = follow_curve(cards, horizon, curve, taken, ceiling)
+    elif gaps_only:
+        target, new_due = fill_gaps(cards, horizon, taken, ceiling)
     else:
-        target, new_due = smooth(cards, horizon, allow_postpone, taken)
+        target, new_due = smooth(cards, horizon, allow_postpone, taken, ceiling)
 
     moved = [c for c in cards if new_due[c.id] != c.due]
-    pulled = sum(target) - sum(before)
+    pulled = sum(1 for c in cards if c.due > horizon >= new_due[c.id])
+    sent_after = sum(1 for c in cards if c.due <= horizon < new_due[c.id])
     notes = {c.id: c.note for c in cards}
-    print(f"\n{deck}: {sum(before)} cards over {horizon} days, {pulled} pulled in")
+    print(
+        f"\n{deck}: {sum(before)} cards over {horizon} days, {pulled} pulled in, "
+        f"{sent_after} sent after"
+    )
+    if settings is not None:
+        print(f"  curve  {digits(curve)}  (total {sum(curve)})")
     print(f"  before {digits(before)}")
     print(f"  after  {digits(target)}")
     print(
@@ -129,10 +149,26 @@ def main() -> None:
     parser.add_argument(
         "--fill-gaps", action="store_true", help="only fill the gaps, keep the shape"
     )
+    parser.add_argument(
+        "--curve",
+        help="follow a custom curve: tomorrow,drop2,drop3,floor,strength,slope_x10000"
+        " (e.g. 55,4,3,13,19.01,194)",
+    )
+    parser.add_argument(
+        "--ceiling", type=float, default=MOVE_CEILING * 100,
+        help="largest move accepted to move fewer cards, in %% of the interval",
+    )
     args = parser.parse_args()
+    settings = None
+    if args.curve:
+        t, d2, d3, f, s, a = args.curve.split(",")
+        settings = CurveSettings(int(t), int(d2), int(d3), int(f), float(s), int(a) / 10000)
     today = today_day_number(args.horizon)
     for deck in args.decks:
-        simulate(deck, args.horizon, today, args.postpone, args.fill_gaps)
+        simulate(
+            deck, args.horizon, today, args.postpone, args.fill_gaps, settings,
+            args.ceiling / 100,
+        )
 
 
 if __name__ == "__main__":

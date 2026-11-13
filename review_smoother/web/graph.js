@@ -100,14 +100,26 @@ const hideTooltip = () => {
     tooltip().style.opacity = 0;
 };
 
-// A titled section with an empty svg element, sized by graph.css.
-const addSection = (container, title) => {
+// A titled section with an empty svg element, sized by graph.css, and an
+// optional legend (list of [class, label]) between them.
+const addSection = (container, title, legend = []) => {
     const section = document.createElement("div");
     section.className = "graph";
     section.innerHTML = `<h1>${title}</h1>`;
+    if (legend.length) {
+        const list = document.createElement("div");
+        list.className = "legend";
+        list.innerHTML = legend
+            .map(([kind, label]) => `<span><i class="swatch ${kind}"></i>${label}</span>`)
+            .join("");
+        section.appendChild(list);
+    }
     container.appendChild(section);
     return svgElement(section, "svg");
 };
+
+// "+2" / "−1" (typographic minus).
+const signed = (value) => (value > 0 ? `+${value}` : `−${-value}`);
 
 // Days shown, as bins [day, day + 1): from `start` to `end` (exclusive).
 // Both graphs share it; the mouse wheel zooms it, dragging pans it, a double
@@ -118,18 +130,25 @@ const fullView = (horizon) => ({ start: 1, end: horizon + 1 });
 
 // What the graphs show: `horizon`, the days shown (`view`), the shared count
 // scale (`countTop`, `countTicks`), and for `before` and `after` the counts
-// with their running-total scale (`totalTop`, `totalTicks`). `final` is false
-// while animating (fractional counts, no hover columns).
+// with their running-total scale (`totalTop`, `totalTicks`). The "after"
+// graph also holds `reference`, the counts before smoothing (the difference
+// is drawn on each day), and `curve`, the target curve when there is one
+// (custom curve), or null. `final` is false while animating (fractional
+// counts, no hover columns).
 const sum = (values) => values.reduce((total, value) => total + value, 0);
 const last = (values) => values[values.length - 1];
 
 const scene = (data, shownView) => {
     // Same vertical scale on both graphs, so that they compare at a glance,
     // and over all days: zooming only narrows the days shown.
-    const countTicks = niceTicks(Math.max(1, ...data.before, ...data.after), 4);
-    const graph = (counts) => {
+    const curve = data.curve || null;
+    const countTicks = niceTicks(
+        Math.max(1, ...data.before, ...data.after, ...(curve || [])),
+        4,
+    );
+    const graph = (counts, reference = null, target = null) => {
         const totalTicks = niceTicks(sum(counts), 4);
-        return { counts, totalTop: last(totalTicks), totalTicks };
+        return { counts, totalTop: last(totalTicks), totalTicks, reference, curve: target };
     };
     return {
         horizon: data.before.length,
@@ -137,7 +156,7 @@ const scene = (data, shownView) => {
         countTop: last(countTicks),
         countTicks,
         before: graph(data.before),
-        after: graph(data.after),
+        after: graph(data.after, data.before, curve),
         final: true,
     };
 };
@@ -151,13 +170,17 @@ const lerp = (from, to, t) => from + (to - from) * t;
 // Between two scenes, day by day; ticks are those of the scene reached,
 // shown once within the scale.
 const between = (from, to, t) => {
+    const mix = (from, to) => Array.from(
+        { length: Math.max(from.length, to.length) },
+        (_, i) => lerp(from[i] || 0, to[i] || 0, t),
+    );
     const graph = (a, b) => ({
-        counts: Array.from(
-            { length: Math.max(a.counts.length, b.counts.length) },
-            (_, i) => lerp(a.counts[i] || 0, b.counts[i] || 0, t),
-        ),
+        counts: mix(a.counts, b.counts),
         totalTop: lerp(a.totalTop, b.totalTop, t),
         totalTicks: b.totalTicks,
+        reference: b.reference && mix(a.reference || a.counts, b.reference),
+        // A curve appearing grows out of the bars.
+        curve: b.curve && mix(a.curve || a.counts, b.curve),
     });
     return {
         horizon: lerp(from.horizon, to.horizon, t),
@@ -245,6 +268,37 @@ const renderChart = (svg, shown, chart, id) => {
         });
     });
 
+    // Difference with the counts before smoothing, day by day: cards added
+    // as a coloured top of the bar, cards removed as a dashed outline up to
+    // the former height.
+    if (chart.reference) {
+        const changes = plot();
+        counts.forEach((count, index) => {
+            const day = index + 1;
+            const former = chart.reference[index] || 0;
+            if (Math.abs(count - former) < 0.01 || !visible(day)) {
+                return;
+            }
+            const high = Math.max(count, former);
+            const low = Math.min(count, former);
+            svgElement(changes, "rect", {
+                class: count > former ? "added" : "removed",
+                x: x(day) + 1,
+                width: Math.max(x(day + 1) - x(day) - 1, 0.5),
+                y: y(high),
+                height: y(low) - y(high),
+            });
+        });
+    }
+
+    // Target curve, as steps: one level per day.
+    if (chart.curve) {
+        const steps = chart.curve
+            .map((value, index) => `${index ? "L" : "M"}${x(index + 1)},${y(value)} L${x(index + 2)},${y(value)}`)
+            .join(" ");
+        svgElement(plot(), "path", { class: "target-curve", d: steps });
+    }
+
     // Running total, as a translucent area.
     if (total && totalTop) {
         const points = [[x(1), y2(0)]].concat(cumulative.map((value, index) => [x(index + 2), y2(value)]));
@@ -272,8 +326,16 @@ const renderChart = (svg, shown, chart, id) => {
             y: MARGIN.top,
             height: innerHeight,
         });
-        const html = `${dayLabel(day)}${strings.colon}<br>${cardsLabel(count)}<br>`
-            + `${strings.runningTotal}${strings.colon} ${cumulative[index]}`;
+        let html = `${dayLabel(day)}${strings.colon}<br>${cardsLabel(count)}`;
+        const former = chart.reference ? chart.reference[index] || 0 : count;
+        if (count !== former) {
+            html += ` (${strings.vsBefore.replace("{diff}", signed(count - former))})`;
+        }
+        html += `<br>`;
+        if (chart.curve) {
+            html += `${strings.targetCurve}${strings.colon} ${chart.curve[index]}<br>`;
+        }
+        html += `${strings.runningTotal}${strings.colon} ${cumulative[index]}`;
         column.addEventListener("mousemove", (event) => {
             if (!drag) {
                 showTooltip(event, html);
@@ -310,9 +372,22 @@ const draw = () => {
     container.innerHTML = "";
     container.classList.toggle("zoomed", view.end - view.start < lastData.before.length);
     hideTooltip();
+    // Legend of the "after" graph: only what the data shows (final data, so
+    // that it does not change while animating).
+    const data = lastData;
+    const legend = [];
+    if (data.after.some((count, i) => count > data.before[i])) {
+        legend.push(["added", strings.addedCards]);
+    }
+    if (data.after.some((count, i) => count < data.before[i])) {
+        legend.push(["removed", strings.removedCards]);
+    }
+    if (data.curve) {
+        legend.push(["target-curve", strings.targetCurve]);
+    }
     // Both sections first, so that each graph is measured at its final size.
     const beforeSvg = addSection(container, strings.before);
-    const afterSvg = addSection(container, strings.after);
+    const afterSvg = addSection(container, strings.after, legend);
     renderChart(beforeSvg, shown, shown.before, "clip-before");
     renderChart(afterSvg, shown, shown.after, "clip-after");
     if (animation) {
