@@ -13,6 +13,8 @@ from review_smoother.smoothing import (
     auto_curve,
     daily_counts,
     even_out,
+    fill_gaps,
+    levels,
     lookahead_end,
     smooth,
 )
@@ -376,12 +378,13 @@ class SmoothTest(unittest.TestCase):
 class WindowEdgeTest(unittest.TestCase):
     def test_last_empty_days_are_filled_from_after_the_window(self):
         # One card a day for 88 days, nothing on days 89 and 90, then cards on
-        # days 93 and 96: those two fill days 89 and 90.
+        # days 93 and 96: those two fill days 89 and 90, in order (6 days at
+        # most, rather than 7 for 96 -> 89).
         cards = cards_from_counts([1] * 88 + [0] * 4 + [1, 0, 0, 1], interval=300)
         target, new_due = smooth(cards, 90)
         self.assertEqual(target, [1] * 90)
         moved = sorted((c.due, new_due[c.id]) for c in cards if new_due[c.id] != c.due)
-        self.assertEqual(moved, [(93, 90), (96, 89)])
+        self.assertEqual(moved, [(93, 89), (96, 90)])
 
     def test_same_on_a_shorter_window(self):
         # 30 days: cards up to day 37 are looked at; days 29 and 30 are filled
@@ -397,6 +400,122 @@ class WindowEdgeTest(unittest.TestCase):
         target, new_due = smooth(cards, 20)
         self.assertEqual(target, [2] * 20)
         self.assertTrue(all(new_due[c.id] == c.due for c in cards))
+
+
+class LevelsTest(unittest.TestCase):
+    def test_a_non_increasing_curve_is_its_own_level(self):
+        self.assertEqual(levels([5, 4, 4, 3, 3, 1, 0]), [5, 4, 4, 3, 3, 1, 0])
+
+    def test_a_rise_is_pooled_with_what_comes_before(self):
+        # 1, 1, 0, 3 averages 1.25.
+        self.assertEqual(levels([2, 1, 1, 0, 3]), [2, 1, 1, 1, 1])
+
+    def test_rounded_half_up(self):
+        # 1, 2 averages 1.5.
+        self.assertEqual(levels([2, 2, 1, 2, 0]), [2, 2, 2, 2, 0])
+
+    def test_non_increasing(self):
+        rng = random.Random(3)
+        for _ in range(200):
+            counts = [rng.randint(0, 6) for _ in range(rng.randint(1, 40))]
+            result = levels(counts)
+            self.assertEqual(len(result), len(counts))
+            self.assertTrue(all(a >= b for a, b in zip(result, result[1:])))
+
+
+class FillGapsTest(unittest.TestCase):
+    def moved(self, cards, new_due):
+        return sorted((c.due, new_due[c.id]) for c in cards if new_due[c.id] != c.due)
+
+    def test_only_the_gap_is_filled(self):
+        # Musique::Pistes d'album over 90 days: 2, 2, 2, then 1s, an empty
+        # day 89 and 3 cards on day 90. The empty day takes one of them, the
+        # extra one goes after the 2s; `smooth` would have made 31 days at 2.
+        counts = [2] * 3 + [1] * 85 + [0, 3]
+        cards = cards_from_counts(counts, interval=300)
+        target, new_due = fill_gaps(cards, 90)
+        self.assertEqual(target, [2] * 4 + [1] * 86)
+        # In hops of one day (day 5 to 4... day 90 to 89), rather than one
+        # card advanced from day 90 to day 4.
+        self.assertEqual(
+            self.moved(cards, new_due),
+            [(day, day - 1) for day in range(5, 89)] + [(90, 88), (90, 89)],
+        )
+
+    def test_a_bump_lengthens_the_plateau_above_without_a_new_peak(self):
+        cards = cards_from_counts([3, 3, 2, 2, 2, 2, 4, 2], interval=50)
+        target, new_due = fill_gaps(cards, 8)
+        self.assertEqual(target, [3, 3, 3, 3, 2, 2, 2, 2])
+        # Short hops: no card advanced by more than a day.
+        self.assertTrue(all(c.due - new_due[c.id] <= 1 for c in cards))
+
+    def test_a_card_after_empty_days_goes_to_the_first_empty_day(self):
+        # Not after the 2s: the step from 2 to 1 is not below 1.
+        cards = cards_from_counts([2, 2, 1, 1, 0, 0, 1], interval=50)
+        target, new_due = fill_gaps(cards, 7)
+        self.assertEqual(target, [2, 2, 1, 1, 1, 0, 0])
+        self.assertEqual(self.moved(cards, new_due), [(7, 5)])
+
+    def test_a_bump_on_a_flat_curve_goes_to_the_first_day(self):
+        cards = cards_from_counts([2, 2, 2, 3], interval=50)
+        target, _ = fill_gaps(cards, 4)
+        self.assertEqual(target, [3, 2, 2, 2])
+
+    def test_a_curve_without_gaps_is_left_as_it_is(self):
+        cards = cards_from_counts([5, 4, 4, 3, 3, 3, 2, 2, 1, 1], interval=50)
+        target, new_due = fill_gaps(cards, 10)
+        self.assertEqual(target, [5, 4, 4, 3, 3, 3, 2, 2, 1, 1])
+        self.assertEqual(self.moved(cards, new_due), [])
+
+    def test_a_gap_takes_a_card_due_after_the_window(self):
+        # 8 days, cards looked at up to day 10 (0, 1, 1 is at level 1).
+        cards = cards_from_counts([1] * 7 + [0, 1, 1], interval=50)
+        target, new_due = fill_gaps(cards, 8)
+        self.assertEqual(target, [1] * 8)
+        self.assertEqual(self.moved(cards, new_due), [(9, 8)])
+
+    def test_no_gap_where_the_cards_after_the_window_are_sparse(self):
+        # 0, 0, 1 is at level 0: day 8 stays empty.
+        cards = cards_from_counts([1] * 7 + [0, 0, 1], interval=50)
+        target, new_due = fill_gaps(cards, 8)
+        self.assertEqual(target, [1] * 7 + [0])
+        self.assertEqual(self.moved(cards, new_due), [])
+
+    def test_the_longest_interval_moves(self):
+        cards = [
+            Card(id=1, due=1, interval=10),
+            Card(id=2, due=3, interval=10),
+            Card(id=3, due=3, interval=90),
+        ]
+        _, new_due = fill_gaps(cards, 3)
+        self.assertEqual(new_due, {1: 1, 2: 3, 3: 2})
+
+    def test_a_card_is_not_moved_next_to_a_sibling(self):
+        # Day 2 is empty; card 2's sibling is due that day in another deck.
+        cards = [
+            Card(id=1, due=1, interval=10, note=1),
+            Card(id=2, due=3, interval=90, note=2),
+            Card(id=3, due=3, interval=10, note=3),
+        ]
+        _, new_due = fill_gaps(cards, 3, taken={2: {2}})
+        self.assertEqual(new_due, {1: 1, 2: 3, 3: 2})
+
+    def test_only_advances_and_ends_non_increasing(self):
+        rng = random.Random(5)
+        for _ in range(200):
+            horizon = rng.randint(5, 60)
+            cards = random_cards(rng, rng.randint(0, 150), lookahead_end(horizon))
+            target, new_due = fill_gaps(cards, horizon)
+            counts = daily_counts((c.due for c in cards), lookahead_end(horizon))
+            level = levels(counts)
+            self.assertTrue(all(new_due[c.id] <= c.due for c in cards))
+            self.assertEqual(
+                target,
+                daily_counts(
+                    (d for d in new_due.values() if d <= horizon), horizon
+                ),
+            )
+            self.assertTrue(all(a >= b for a, b in zip(target, target[1:])))
 
 
 if __name__ == "__main__":

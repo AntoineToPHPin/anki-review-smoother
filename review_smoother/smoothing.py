@@ -263,7 +263,7 @@ def smooth(
     smoothing a longer period would give it, instead of dropping because the
     cards due right after it are left out.
 
-    Cards are advanced only (see `auto_curve` and `assign`), unless
+    Cards are advanced only (see `auto_curve`), unless
     `allow_postpone`: then the peak at the start of the curve is lowered one
     card a day at a time, by postponing cards within their margin, as long as
     that postpones no more cards than the budget, creates no steeper step
@@ -280,7 +280,8 @@ def smooth(
     the rules above look at the window part of the curves only.
 
     Finally, plateaus of the window are evened out (see `even_out`), and the
-    cards are picked by `assign`, which keeps siblings apart: `taken` gives
+    cards are picked by `assign_in_short_hops` (the smallest largest advance
+    relative to the interval), which keeps siblings apart: `taken` gives
     the days of the siblings outside `cards`.
     """
     end = lookahead_end(horizon)
@@ -308,12 +309,249 @@ def smooth(
             shifted, target = candidate, lowered
     # Evening out only moves cards earlier, so the whole curve stays reachable.
     target = even_out(target[:horizon]) + target[horizon:]
-    assigned = assign(shifted, target, taken)
+    assigned = assign_in_short_hops(shifted, target, taken)
     # Cards left after the window keep their due day.
     new_due = {
         c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards
     }
     return target[:horizon], new_due
+
+
+def levels(counts: Sequence[int]) -> List[int]:
+    """Level of each day: the closest non-increasing curve to `counts` (least
+    squares, by pooling adjacent days that rise), rounded to whole cards.
+
+    A rise is pooled with what comes before it until the curve no longer
+    rises: 1, 1, 0, 3 gives 1.25 for each of those days. So an isolated empty
+    day among days at 1 is at level 1, and a pile after it does not lift the
+    days before it much."""
+    blocks: List[List[int]] = []  # [cards, days]
+    for count in counts:
+        blocks.append([count, 1])
+        # Pool while the previous block's average is below this one's.
+        while len(blocks) >= 2 and blocks[-2][0] * blocks[-1][1] < blocks[-1][0] * blocks[-2][1]:
+            cards, days = blocks.pop()
+            blocks[-1][0] += cards
+            blocks[-1][1] += days
+    result: List[int] = []
+    for cards, days in blocks:
+        # Rounded half up: 1.5 cards a day is level 2.
+        result += [math.floor(Fraction(cards, days) + Fraction(1, 2))] * days
+    return result
+
+
+def fill_gaps(
+    cards: Sequence[Card], horizon: int, taken: Optional[Taken] = None
+) -> Tuple[List[int], Dict[int, int]]:
+    """Daily counts over the window and new due day of every card, when only
+    filling the gaps: the current shape of the curve is kept, and only the
+    days below their level (see `levels`) get cards, up to it.
+
+    The alternative to `smooth` for decks whose curve is fine apart from a few
+    gaps: 2, 2, 2, 1, 1... 1, 0, 3 becomes 2, 2, 2, 2, 1... 1, 1, 1, where
+    `smooth` would make longer plateaus at 2 and 1, then days at 0.
+
+    Gaps are filled from the last one backwards, each with the nearest later
+    cards: from days above their level (which are lowered at most to it,
+    never into a new gap), or from the cards due after the window (`cards`
+    goes up to `lookahead_end(horizon)`), which are pulled into it. On a day,
+    the card with the longest interval goes first, the one that advancing
+    matters least for; a card is not moved next to a sibling (see `assign`)
+    while another can come. A gap stays partly empty if no later card is left.
+
+    Then, while a day of the window holds more cards than the day before it,
+    one of its cards goes to the first step down of the curve before it
+    (where a day holds fewer cards than the day before it) that falls below
+    that day's count, which lengthens the plateau above that step: the 3
+    cards on day 90 above, once one filled day 89, leave one on day 4, after
+    the 2s; a single card after empty days goes to the first empty day. So
+    the window ends up non-increasing without any new peak (3, 3, 2, 2... 4
+    gives 3, 3, 3, 3, 2...); the first day only gets a card if the curve is
+    flat before the rise.
+    Cards are only ever advanced.
+    """
+    taken = taken or {}
+    end = lookahead_end(horizon)
+    level = levels(daily_counts((c.due for c in cards), end))
+    on_day: List[List[Card]] = [[] for _ in range(end + 1)]
+    for card in cards:
+        on_day[card.due].append(card)
+    for day_cards in on_day:
+        # Longest interval first (ties by id, for a stable result).
+        day_cards.sort(key=lambda c: (-c.interval, c.id))
+    note_days: Dict[object, Set[int]] = {}
+    for card in cards:
+        note_days.setdefault(card.note_key, set()).add(card.due)
+
+    def has_sibling_on(card: Card, day: int) -> bool:
+        return day in note_days.get(card.note_key, ()) or (
+            card.note is not None and day in taken.get(card.note, ())
+        )
+
+    def spare(day: int) -> int:
+        """Cards that may leave `day`: those above its level in the window,
+        all of them after it."""
+        if day > horizon:
+            return len(on_day[day])
+        return len(on_day[day]) - level[day - 1]
+
+    def take(gap: int) -> Optional[Card]:
+        """Nearest later card that may fill `gap`, removed from its day."""
+        fallback: Optional[Tuple[int, Card]] = None
+        for day in range(gap + 1, end + 1):
+            if spare(day) <= 0:
+                continue
+            for card in on_day[day]:
+                if not has_sibling_on(card, gap):
+                    on_day[day].remove(card)
+                    return card
+                fallback = fallback or (day, card)
+        # Only siblings left: rather that than an empty day.
+        if fallback is None:
+            return None
+        day, card = fallback
+        on_day[day].remove(card)
+        return card
+
+    new_due = {c.id: c.due for c in cards}
+
+    def move(card: Card, day: int) -> None:
+        on_day[day].append(card)
+        new_due[card.id] = day
+        note_days.setdefault(card.note_key, set()).add(day)
+
+    for gap in range(1, horizon + 1):
+        while len(on_day[gap]) < level[gap - 1]:
+            card = take(gap)
+            if card is None:
+                break
+            move(card, gap)
+
+    # Cards left above the curve go to the first step down before them.
+    count = lambda day: len(on_day[day])  # noqa: E731
+    while True:
+        rise = next(
+            (day for day in range(2, horizon + 1) if count(day) > count(day - 1)), None
+        )
+        if rise is None:
+            break
+        # First step down below the count of that day: a 2 after 1s goes
+        # after the 2s, a 1 after empty days to the first empty day.
+        step = next(
+            (
+                day
+                for day in range(2, rise)
+                if count(day) < count(day - 1) and count(day) < count(rise)
+            ),
+            1,
+        )
+        card = next(
+            (c for c in on_day[rise] if not has_sibling_on(c, step)), on_day[rise][0]
+        )
+        on_day[rise].remove(card)
+        move(card, step)
+
+    # The curve is set; which cards make it is chosen again, in short hops.
+    target = [count(day) for day in range(1, end + 1)]
+    assigned = assign_in_short_hops(cards, target, taken)
+    # Cards left after the window keep their due day.
+    new_due = {
+        c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards
+    }
+    return target[:horizon], new_due
+
+
+def assign_in_short_hops(
+    cards: Sequence[Card], target: Sequence[int], taken: Optional[Taken] = None
+) -> Dict[int, int]:
+    """New due day for each card so that daily counts match `target` exactly,
+    advancing cards only, with the **smallest largest advance relative to the
+    interval**.
+
+    Rather than one card advanced far (day 90 to day 4), a chain of short
+    hops: day 5 to day 4, day 6 to day 5... day 90 to day 89. More cards move,
+    each by a small share of its interval. (`assign` minimises the sum of the
+    relative advances instead, which favours the one long hop of the card
+    with the longest interval.)
+
+    The smallest share is searched by bisection: with a share s, each card may
+    advance by at most s times its interval, and days are filled from the
+    first one, each taking the cards it may take that are due the soonest
+    (they have the least room left), its own cards first. A card is not moved
+    to a day where a sibling is (see `assign`), even if that takes a larger
+    share; only if the curve cannot be reached that way at all are siblings
+    ignored.
+    """
+    taken = taken or {}
+    if sum(target) != len(cards):
+        raise ValueError(
+            f"Target curve holds {sum(target)} cards, not {len(cards)}."
+        )
+    due_days: Dict[object, Set[int]] = {}
+    for card in cards:
+        due_days.setdefault(card.note_key, set()).add(card.due)
+
+    def attempt(share: float, siblings: bool) -> Optional[Dict[int, int]]:
+        opening: Dict[int, List[Card]] = {}
+        for card in cards:
+            earliest = max(1, card.due - math.floor(share * max(card.interval, 1) + 1e-9))
+            opening.setdefault(earliest, []).append(card)
+        moved_days: Dict[object, Set[int]] = {}
+        available: list = []
+        new_due: Dict[int, int] = {}
+        for day in range(1, len(target) + 1):
+            for card in opening.get(day, ()):
+                # Due soonest first; then the longest interval, cheapest to move.
+                heapq.heappush(available, (card.due, -card.interval, card.id, card))
+            chosen: List[Card] = []
+            set_aside: list = []
+            while len(chosen) < target[day - 1] and available:
+                entry = heapq.heappop(available)
+                card = entry[-1]
+                key = card.note_key
+                if (
+                    siblings
+                    and card.due != day
+                    and (
+                        day in due_days.get(key, ())
+                        or day in moved_days.get(key, ())
+                        or (card.note is not None and day in taken.get(card.note, ()))
+                    )
+                ):
+                    set_aside.append(entry)
+                else:
+                    chosen.append(card)
+            # No sibling as a last resort here: a larger share is tried
+            # instead, which lets other cards come.
+            if len(chosen) < target[day - 1]:
+                return None
+            for entry in set_aside:
+                heapq.heappush(available, entry)
+            for card in chosen:
+                new_due[card.id] = day
+                if card.due != day:
+                    moved_days.setdefault(card.note_key, set()).add(day)
+            # A card still waiting past its due day would have to be postponed.
+            if available and available[0][0] <= day:
+                return None
+        return new_due
+
+    # Every card may go as far as day 1: reachable if advancing alone is.
+    top = max((c.due - 1) / max(c.interval, 1) for c in cards) if cards else 0.0
+    for siblings in (True, False):
+        best = attempt(top, siblings)
+        if best is None:
+            continue
+        low, high = 0.0, top
+        for _ in range(40):
+            middle = (low + high) / 2
+            found = attempt(middle, siblings)
+            if found is None:
+                low = middle
+            else:
+                high, best = middle, found
+        return best
+    raise InfeasibleCurve(1)
 
 
 def _steepest_step(curve: Sequence[int]) -> int:

@@ -37,6 +37,7 @@ from .smoothing import (
     POSTPONE_MARGIN,
     Card,
     daily_counts,
+    fill_gaps,
     lookahead_end,
     move_stats,
     smooth,
@@ -72,11 +73,14 @@ class Plan:
         return sum(self.after)
 
 
-def make_plan(col: Collection, deck: str, horizon: int, allow_postpone: bool) -> Plan:
+def make_plan(
+    col: Collection, deck: str, horizon: int, allow_postpone: bool, gaps_only: bool
+) -> Plan:
     """Smoothing of one deck (subdecks included), without changing anything.
 
     `cards` also holds the cards due shortly after the window, which smoothing
-    may pull into it (see `lookahead_end`)."""
+    may pull into it (see `lookahead_end`). `gaps_only`: keep the shape of the
+    curve and only fill its gaps (see `fill_gaps`); nothing is postponed."""
     today = col.sched.today
     query = col.build_search_string(
         SearchNode(deck=deck),
@@ -90,7 +94,11 @@ def make_plan(col: Collection, deck: str, horizon: int, allow_postpone: bool) ->
         for cid, nid, due, ivl in rows
     ]
     before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
-    after, new_due = smooth(cards, horizon, allow_postpone, sibling_days(col, cards))
+    taken = sibling_days(col, cards)
+    if gaps_only:
+        after, new_due = fill_gaps(cards, horizon, taken)
+    else:
+        after, new_due = smooth(cards, horizon, allow_postpone, taken)
     return Plan(horizon, cards, before, after, new_due)
 
 
@@ -170,6 +178,12 @@ class SmoothDialog(QDialog):
 
         self.postpone = QCheckBox(tr("postpone", margin=tr.percent(POSTPONE_MARGIN)))
         self.postpone.setChecked(bool(config.get("allow_postpone", False)))
+        # Keep the curve as it is and only fill its gaps; postponing is then
+        # not used (see `fill_gaps`).
+        self.gaps_only = QCheckBox(tr("gaps_only"))
+        self.gaps_only.setChecked(bool(config.get("fill_gaps_only", False)))
+        self.postpone.setEnabled(not self.gaps_only.isChecked())
+        qconnect(self.gaps_only.toggled, lambda on: self.postpone.setEnabled(not on))
 
         # A shortcut sets the number of days, which can still be typed in.
         self.ranges = QButtonGroup(self)
@@ -187,6 +201,7 @@ class SmoothDialog(QDialog):
         form = QFormLayout()
         form.addRow(tr("deck"), self.deck)
         form.addRow(tr("horizon"), horizon_row)
+        form.addRow("", self.gaps_only)
         form.addRow("", self.postpone)
 
         self.web = AnkiWebView(self, title="review smoother")
@@ -221,6 +236,7 @@ class SmoothDialog(QDialog):
         qconnect(self.deck.currentTextChanged, self.refresh)
         qconnect(self.horizon.valueChanged, self.refresh)
         qconnect(self.postpone.toggled, self.refresh)
+        qconnect(self.gaps_only.toggled, self.refresh)
         restoreGeom(self, GEOMETRY_KEY, default_size=self.default_size())
         self.refresh()
 
@@ -251,6 +267,7 @@ class SmoothDialog(QDialog):
             self.deck.currentText(),
             self.horizon.value(),
             self.postpone.isChecked(),
+            self.gaps_only.isChecked(),
         )
         plan = self.plan
         tr = self.tr

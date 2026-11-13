@@ -1,4 +1,5 @@
 {
     "horizon_days": 90,
+    "fill_gaps_only": false,
     "allow_postpone": false
 }

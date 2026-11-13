@@ -20,6 +20,7 @@ from review_smoother.i18n import Translator  # noqa: E402
 from review_smoother.smoothing import (  # noqa: E402
     Card,
     daily_counts,
+    fill_gaps,
     lookahead_end,
     move_stats,
     smooth,
@@ -89,11 +90,16 @@ def digits(counts) -> str:
     return "".join(str(n) if n < 10 else "+" for n in counts)
 
 
-def simulate(deck: str, horizon: int, today: int, allow_postpone: bool) -> None:
+def simulate(
+    deck: str, horizon: int, today: int, allow_postpone: bool, gaps_only: bool = False
+) -> None:
     cards = deck_cards(deck, lookahead_end(horizon), today)
     taken = sibling_days(cards, today)
     before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
-    target, new_due = smooth(cards, horizon, allow_postpone, taken)
+    if gaps_only:
+        target, new_due = fill_gaps(cards, horizon, taken)
+    else:
+        target, new_due = smooth(cards, horizon, allow_postpone, taken)
 
     moved = [c for c in cards if new_due[c.id] != c.due]
     pulled = sum(target) - sum(before)
@@ -120,10 +126,13 @@ def main() -> None:
     parser.add_argument(
         "--postpone", action="store_true", help="allow postponing a few cards"
     )
+    parser.add_argument(
+        "--fill-gaps", action="store_true", help="only fill the gaps, keep the shape"
+    )
     args = parser.parse_args()
     today = today_day_number(args.horizon)
     for deck in args.decks:
-        simulate(deck, args.horizon, today, args.postpone)
+        simulate(deck, args.horizon, today, args.postpone, args.fill_gaps)
 
 
 if __name__ == "__main__":

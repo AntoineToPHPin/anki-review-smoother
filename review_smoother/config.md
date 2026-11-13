@@ -1,3 +1,5 @@
 **horizon_days** (default `90`): number of days, starting tomorrow, over which upcoming reviews are smoothed. It is the initial value in the smoothing dialog, where it can also be changed for a single run. Cards due in the following quarter of that period (up to day 112 for 90 days) may be advanced into it, so that its last days are not left emptier than the days after them.
 
+**fill_gaps_only** (default `false`): initial state of the "Only fill the gaps" checkbox in the smoothing dialog. When it is on, the curve keeps its current shape: only the days below the level of the days around them get cards, the nearest ones due after them (for example 2, 2, 2, 1, 1… 1, 0, 3 becomes 2, 2, 2, 1, 1… 1, 1, 2). When it is off, the curve is reshaped into a regular staircase. Postponing is not used with this option.
+
 **allow_postpone** (default `false`): initial state of the "Postpone a few cards" checkbox in the smoothing dialog. Cards are normally only advanced; when this is on, a few cards (at most 1% of the deck's cards in the window, at least one) may be pushed back by up to 10% of their interval, only to lower the peak at the start of the curve.

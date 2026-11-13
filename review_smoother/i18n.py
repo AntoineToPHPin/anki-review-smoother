@@ -27,6 +27,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "Postpone a few cards when it lowers the start of the curve "
             "(by at most {margin} of their interval)"
         ),
+        "gaps_only": "Only fill the gaps, keeping the current shape of the curve",
         "zoom_hint": "Mouse wheel: zoom · Drag: move · Double click: show all days",
         "show_moved": "Show cards to move",
         "stats_link_tip": "Smooth this workload",
@@ -70,6 +71,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "Reporter quelques cartes quand cela abaisse le début de la courbe "
             "(d’au plus {margin} de leur intervalle)"
         ),
+        "gaps_only": "Combler seulement les creux, en gardant la forme actuelle de la courbe",
         "zoom_hint": (
             f"Molette{NBSP}: zoomer · Glisser{NBSP}: déplacer · "
             f"Double-clic{NBSP}: afficher tous les jours"
