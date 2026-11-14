@@ -23,6 +23,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "range_month": "1 month",
         "range_three_months": "3 months",
         "range_year": "1 year",
+        "range_two_years": "2 years",
         "postpone": (
             "Postpone a few cards when it lowers the start of the curve "
             "(by at most {margin} of their interval)"
@@ -32,6 +33,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "method_gaps": "Only fill the gaps, keeping the current shape of the curve",
         "method_custom": "Follow a custom curve",
         "curve_title": "Custom curve (remembered for this deck)",
+        "curve_toggle": "Show or hide the curve's settings",
         "curve_tomorrow": "Cards tomorrow (day 1):",
         "curve_drop_day2": "Drop from day 1 to day 2:",
         "curve_drop_day3": "Drop from day 2 to day 3:",
@@ -100,6 +102,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "range_month": "1 mois",
         "range_three_months": "3 mois",
         "range_year": "1 an",
+        "range_two_years": "2 ans",
         "postpone": (
             "Reporter quelques cartes quand cela abaisse le début de la courbe "
             "(d’au plus {margin} de leur intervalle)"
@@ -109,6 +112,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "method_gaps": "Combler seulement les creux, en gardant la forme actuelle de la courbe",
         "method_custom": "Suivre une courbe personnalisée",
         "curve_title": "Courbe personnalisée (mémorisée pour ce paquet)",
+        "curve_toggle": "Afficher ou masquer les réglages de la courbe",
         "curve_tomorrow": f"Cartes demain (J1){NBSP}:",
         "curve_drop_day2": f"Écart entre J1 et J2{NBSP}:",
         "curve_drop_day3": f"Écart entre J2 et J3{NBSP}:",

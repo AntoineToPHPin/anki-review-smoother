@@ -279,6 +279,22 @@ def cards_from_counts(counts, interval):
     return [Card(id=i, due=day, interval=interval) for i, day in enumerate(days)]
 
 
+def assert_outside_only(test, cards, new_due, horizon, gives):
+    """Each day after the window only gives cards (`gives`) or only receives
+    some: cards hopping through a day leave its count as it was."""
+    end = max([c.due for c in cards] + list(new_due.values()) + [horizon])
+    before = [0] * (end + 1)
+    after = [0] * (end + 1)
+    for c in cards:
+        before[c.due] += 1
+        after[new_due[c.id]] += 1
+    for day in range(horizon + 1, end + 1):
+        if gives:
+            test.assertLessEqual(after[day], before[day], day)
+        else:
+            test.assertGreaterEqual(after[day], before[day], day)
+
+
 class SmoothTest(unittest.TestCase):
     def postponed(self, cards, new_due):
         return [c for c in cards if new_due[c.id] > c.due]
@@ -370,11 +386,13 @@ class SmoothTest(unittest.TestCase):
             self.assertTrue(all(a >= b for a, b in zip(target, target[1:])), target)
             for card in cards:
                 if card.due > horizon:
-                    # Pulled into the window, or left where it was.
-                    self.assertTrue(new_due[card.id] == card.due or new_due[card.id] <= horizon)
+                    # Never postponed.
+                    self.assertLessEqual(new_due[card.id], card.due)
                 else:
                     # Postponed cards stay in the window.
                     self.assertLessEqual(new_due[card.id], horizon)
+            # Days after the window only give cards.
+            assert_outside_only(self, cards, new_due, horizon, gives=True)
             postponed = self.postponed(cards, new_due)
             self.assertLessEqual(len(postponed), max(1, int(len(window) * POSTPONE_BUDGET)))
 
@@ -482,11 +500,23 @@ class FillGapsTest(unittest.TestCase):
         self.assertEqual(self.moved(cards, new_due), [])
 
     def test_a_gap_takes_a_card_due_after_the_window(self):
-        # 8 days, cards looked at up to day 10 (0, 1, 1 is at level 1).
+        # 8 days, cards looked at up to day 10 (0, 1, 1 is at level 1). Days
+        # 9 and 10 are at their reference (1, 1): none has a card to spare,
+        # so the card comes from as far as possible, day 10, not day 9 (which
+        # would show as a gap in the window the next day).
         cards = cards_from_counts([1] * 7 + [0, 1, 1], interval=50)
         target, new_due = fill_gaps(cards, 8)
         self.assertEqual(target, [1] * 8)
-        self.assertEqual(self.moved(cards, new_due), [(9, 8)])
+        self.assertEqual(self.moved(cards, new_due), [(10, 8)])
+
+    def test_a_gap_takes_a_card_from_a_day_with_one_to_spare(self):
+        # After the window, 1, 1, 2 is at level 1: day 11 has a card to
+        # spare; days 9 and 10 keep theirs.
+        cards = cards_from_counts([1] * 7 + [0, 1, 1, 2], interval=50)
+        target, new_due = fill_gaps(cards, 8)
+        self.assertEqual(target, [1] * 8)
+        after = daily_counts((d for d in new_due.values()), 11)
+        self.assertEqual(after, [1] * 11)
 
     def test_no_gap_where_the_cards_after_the_window_are_sparse(self):
         # 0, 0, 1 is at level 0: day 8 stays empty.
@@ -609,10 +639,37 @@ class FollowCurveTest(unittest.TestCase):
             if len(cards) >= sum(curve):
                 self.assertEqual(target, curve)
             self.assertEqual(len(new_due), len(cards))
-            # Cards left after the window never come back before it ends.
-            for c in cards:
-                if new_due[c.id] > horizon:
-                    self.assertEqual(new_due[c.id], max(c.due, horizon + 1))
+            # Days after the window give cards when the window takes some,
+            # and receive cards when it postpones some; never both.
+            window = sum(1 for c in cards if c.due <= horizon)
+            assert_outside_only(self, cards, new_due, horizon, gives=sum(target) >= window)
+
+    def test_missing_cards_come_from_a_day_above_the_curve(self):
+        # Musique::Paroles de chansons over a year, 2 cards short, the deck
+        # still on the curve after the window except on day 420: the 2 cards
+        # come from there, every other day keeps its 13 cards (taking them
+        # from day 366 would leave a gap in the window the next day).
+        counts = [13] * 365
+        counts[1] -= 1
+        counts[105] -= 1
+        after_window = [13] * 100
+        after_window[420 - 366] += 2
+        cards = cards_from_counts(counts + after_window, interval=300)
+        target, new_due = follow_curve(cards, 365, [13] * 465)
+        self.assertEqual(target, [13] * 365)
+        self.assertEqual(daily_counts(new_due.values(), 465), [13] * 465)
+        moved = [c for c in cards if new_due[c.id] != c.due]
+        # Hops of at most 15 days from day 420 to days 2 and 106.
+        self.assertLessEqual(len(moved), 2 * (420 // 15 + 1))
+        self.assertTrue(all(abs(new_due[c.id] - c.due) <= 15 for c in moved))
+
+    def test_surplus_goes_to_a_day_below_the_curve(self):
+        # One card too many in the window: it goes to day 9, below the
+        # curve, not to day 6 right after the window.
+        cards = cards_from_counts([2, 2, 2, 2, 3, 2, 2, 2, 1, 2], interval=100)
+        target, new_due = follow_curve(cards, 5, [2] * 10)
+        self.assertEqual(target, [2] * 5)
+        self.assertEqual(daily_counts(new_due.values(), 10), [2] * 10)
 
 
 class FewerMovesTest(unittest.TestCase):

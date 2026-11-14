@@ -26,7 +26,7 @@ from review_smoother.smoothing import (  # noqa: E402
     daily_counts,
     fill_gaps,
     follow_curve,
-    lookahead_end,
+    outside_end,
     move_stats,
     smooth,
 )
@@ -104,12 +104,13 @@ def simulate(
     settings: Optional[CurveSettings] = None,
     ceiling: float = MOVE_CEILING,
 ) -> None:
-    cards = deck_cards(deck, lookahead_end(horizon), today)
+    cards = deck_cards(deck, outside_end(horizon), today)
     taken = sibling_days(cards, today)
     before = daily_counts((c.due for c in cards if c.due <= horizon), horizon)
     if settings is not None:
-        curve = custom_curve(settings, horizon)
+        curve = custom_curve(settings, outside_end(horizon))
         target, new_due = follow_curve(cards, horizon, curve, taken, ceiling)
+        curve = curve[:horizon]
     elif gaps_only:
         target, new_due = fill_gaps(cards, horizon, taken, ceiling)
     else:
@@ -132,6 +133,13 @@ def simulate(
         f"{same_day_siblings({c.id: c.due for c in cards}, notes, taken, horizon)} before, "
         f"{same_day_siblings(new_due, notes, taken, horizon)} after"
     )
+    change = {}
+    for c in cards:
+        for day, n in ((c.due, -1), (new_due[c.id], 1)):
+            if day > horizon:
+                change[day] = change.get(day, 0) + n
+    changed = [f"J{day} {n:+d}" for day, n in sorted(change.items()) if n]
+    print(f"  after the window: {', '.join(changed) or 'no day changed'}")
     if not moved:
         print("  nothing to move")
         return

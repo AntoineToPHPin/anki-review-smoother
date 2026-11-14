@@ -249,8 +249,79 @@ MOVE_CEILING = 0.05
 
 
 def lookahead_end(horizon: int) -> int:
-    """Last day of the cards that `smooth` may pull into the window."""
+    """Last day of the cards that shape the end of the window: `smooth`
+    computes its curve up to there, `fill_gaps` its levels; and the last day
+    a card may be taken from (or put on) when no day after the window is
+    above (or below) its reference (see `_outside_target`)."""
     return horizon + int(horizon * LOOKAHEAD)
+
+
+# Cards due up to this share of the window after it are looked at, to find
+# the days that hold more (or fewer) cards than their reference: the cards
+# the window lacks are taken from them (see `_outside_target`).
+OUTSIDE = 1.0
+
+
+def outside_end(horizon: int) -> int:
+    """Last day of the cards to give the smoothing functions."""
+    return max(lookahead_end(horizon), horizon + int(horizon * OUTSIDE))
+
+
+def _outside_target(
+    cards: Sequence[Card],
+    horizon: int,
+    window_target: Sequence[int],
+    curve: Optional[Sequence[int]] = None,
+) -> Tuple[List[int], int]:
+    """Target over every day of `cards`, the window's then the days after it,
+    and the cards the window lacks that no day could give.
+
+    Taking a card from the day right after the window would leave a gap that
+    shows in the window the next day (that day becomes its last one); putting
+    one there, a peak. So the days after the window keep their cards, except
+    those **above their reference**: the window's missing cards are taken from
+    them, the nearest first, down to the reference; cards the window has too
+    many of go to the nearest days **below** it, up to it. The reference is
+    the custom curve, carried on after the window, or else the closest
+    non-increasing curve to the days after the window (`levels`).
+
+    Only if that is not enough, the rest is taken (or put) as far as possible
+    within `lookahead_end`: one card a day, from that last day backwards.
+    The cards then reach the window in hops (see `_few_moves`), each day on
+    the way keeping its count.
+    """
+    end = max([lookahead_end(horizon), horizon + 1] + [c.due for c in cards])
+    counts = [0] * (end - horizon)
+    for card in cards:
+        if card.due > horizon:
+            counts[card.due - horizon - 1] += 1
+    if curve is None:
+        reference = levels(counts)
+    else:
+        reference = [curve[d - 1] if d <= len(curve) else 0 for d in range(horizon + 1, end + 1)]
+    need = sum(window_target) - sum(1 for c in cards if c.due <= horizon)
+    for i in range(len(counts)):
+        if need > 0 and counts[i] > reference[i]:
+            n = min(need, counts[i] - reference[i])
+        elif need < 0 and counts[i] < reference[i]:
+            n = -min(-need, reference[i] - counts[i])
+        else:
+            continue
+        counts[i] -= n
+        need -= n
+    # As far as possible: from the last day of the lookahead backwards.
+    farthest_first = range(max(1, min(lookahead_end(horizon) - horizon, len(counts))) - 1, -1, -1)
+    while need > 0 and any(counts[i] > 0 for i in farthest_first):
+        for i in farthest_first:
+            if need > 0 and counts[i] > 0:
+                counts[i] -= 1
+                need -= 1
+    while need < 0:
+        for i in farthest_first:
+            if need < 0:
+                counts[i] += 1
+                need += 1
+    return list(window_target) + counts, need
 
 
 def smooth(
@@ -262,12 +333,12 @@ def smooth(
 ) -> Tuple[List[int], Dict[int, int]]:
     """Target curve over the window and new due day of every card.
 
-    `cards` are the cards due from day 1 to `lookahead_end(horizon)`. The curve
-    is computed over that longer period and only its first `horizon` days are
-    applied: the cards it puts in the window are advanced into it, the others
-    after the window keep their due day. So the end of the window holds what
+    `cards` are the cards due from day 1 to `outside_end(horizon)`. The curve
+    is computed over the cards due up to `lookahead_end(horizon)` and only its
+    first `horizon` days are applied, so the end of the window holds what
     smoothing a longer period would give it, instead of dropping because the
-    cards due right after it are left out.
+    cards due right after it are left out. The cards it pulls into the window
+    come from days after it that have cards to spare (see `_outside_target`).
 
     Cards are advanced only (see `auto_curve`), unless
     `allow_postpone`: then the peak at the start of the curve is lowered one
@@ -293,7 +364,11 @@ def smooth(
     """
     end = lookahead_end(horizon)
     window = [c for c in cards if c.due <= horizon]
-    advance_only = auto_curve(daily_counts((c.due for c in cards), end))
+
+    def curve_of(some: Sequence[Card]) -> List[int]:
+        return auto_curve(daily_counts((c.due for c in some if c.due <= end), end))
+
+    advance_only = curve_of(cards)
     target = advance_only
     shifted: Sequence[Card] = cards
     if allow_postpone:
@@ -304,7 +379,7 @@ def smooth(
             if postponed is None or len(postponed) > budget:
                 break
             candidate = [replace(c, due=postponed.get(c.id, c.due)) for c in cards]
-            lowered = auto_curve(daily_counts((c.due for c in candidate), end))
+            lowered = curve_of(candidate)
             # Cards due after the window can hold the peak up (a pile right
             # after it): postponing then does not lower it.
             if lowered[0] >= target[0]:
@@ -315,15 +390,14 @@ def smooth(
                 break
             shifted, target = candidate, lowered
     # Evening out only moves cards earlier, so the whole curve stays reachable.
-    target = even_out(target[:horizon]) + target[horizon:]
-    assigned = assign_in_short_hops(shifted, target, taken)
-    # Cards left after the window keep their due day.
-    new_due = {
-        c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards
-    }
+    target = even_out(target[:horizon])
+    # The cards pulled into the window come from days after it that have
+    # cards to spare (see `_outside_target`).
+    full, _ = _outside_target(shifted, horizon, target)
+    assigned = assign_in_short_hops(shifted, full, taken)
     # Postponed cards start from their new day; their total move counts.
-    few = fewer_moves(shifted, target[:horizon], new_due, False, taken, ceiling)
-    return target[:horizon], few
+    few = fewer_moves(shifted, full, assigned, False, taken, ceiling)
+    return target, few
 
 
 def levels(counts: Sequence[int]) -> List[int]:
@@ -363,10 +437,13 @@ def fill_gaps(
     gaps: 2, 2, 2, 1, 1... 1, 0, 3 becomes 2, 2, 2, 2, 1... 1, 1, 1, where
     `smooth` would make longer plateaus at 2 and 1, then days at 0.
 
-    Gaps are filled from the last one backwards, each with the nearest later
-    cards: from days above their level (which are lowered at most to it,
-    never into a new gap), or from the cards due after the window (`cards`
-    goes up to `lookahead_end(horizon)`), which are pulled into it. On a day,
+    `cards` are the cards due from day 1 to `outside_end(horizon)`; levels
+    are computed up to `lookahead_end(horizon)`. Gaps are filled from the
+    first one, each with the nearest later cards: from days above their level
+    (which are lowered at most to it, never into a new gap), or from the
+    cards due after the window, which are pulled into it (the cards that
+    actually come in are then taken from days after the window with cards to
+    spare: see `_outside_target`). On a day,
     the card with the longest interval goes first, the one that advancing
     matters least for; a card is not moved next to a sibling (see `assign`)
     while another can come. A gap stays partly empty if no later card is left.
@@ -384,9 +461,10 @@ def fill_gaps(
     """
     taken = taken or {}
     end = lookahead_end(horizon)
-    level = levels(daily_counts((c.due for c in cards), end))
+    near = [c for c in cards if c.due <= end]
+    level = levels(daily_counts((c.due for c in near), end))
     on_day: List[List[Card]] = [[] for _ in range(end + 1)]
-    for card in cards:
+    for card in near:
         on_day[card.due].append(card)
     for day_cards in on_day:
         # Longest interval first (ties by id, for a stable result).
@@ -463,16 +541,14 @@ def fill_gaps(
         on_day[rise].remove(card)
         move(card, step)
 
-    # The curve is set; which cards make it is chosen again: short hops, then
-    # fewer cards within the ceiling.
-    target = [count(day) for day in range(1, end + 1)]
-    assigned = assign_in_short_hops(cards, target, taken)
-    # Cards left after the window keep their due day.
-    new_due = {
-        c.id: assigned[c.id] if assigned[c.id] <= horizon else c.due for c in cards
-    }
-    few = fewer_moves(cards, target[:horizon], new_due, False, taken, ceiling)
-    return target[:horizon], few
+    # The curve is set; which cards make it is chosen again, the cards pulled
+    # in coming from days after the window with cards to spare (see
+    # `_outside_target`): short hops, then fewer cards within the ceiling.
+    target = [count(day) for day in range(1, horizon + 1)]
+    full, _ = _outside_target(cards, horizon, target)
+    assigned = assign_in_short_hops(cards, full, taken)
+    few = fewer_moves(cards, full, assigned, False, taken, ceiling)
+    return target, few
 
 
 def largest_share(cards: Sequence[Card], new_due: Mapping[int, int]) -> float:
@@ -497,7 +573,8 @@ def fewer_moves(
 ) -> Dict[int, int]:
     """The compromise between few cards moved and short moves.
 
-    `baseline` makes the window hold `window_target` with the smallest
+    `window_target` covers every day of `cards`, those after the window too
+    (see `_outside_target`). `baseline` makes them hold it with the smallest
     largest move (short hops, many cards: see `assign_in_short_hops`). This
     allows each card to move by up to the larger of that move and `ceiling`
     (relative to its interval) and, within that, moves as few cards as
@@ -505,8 +582,7 @@ def fewer_moves(
     the same largest move with fewer, longer hops). The baseline stays if
     neither moves fewer cards.
 
-    `new_due` maps: cards left after the window keep their due day, or, due
-    in it, go to the day right after it (`both_ways` only: postponing).
+    `both_ways`: cards may be postponed too (`follow_curve`).
     """
     shortest = largest_share(cards, baseline)
     best = baseline
@@ -601,7 +677,15 @@ def _few_moves(
                     outside.remove(card)
                     pulls_left -= 1
                     return card
-        # Otherwise the farthest card of the window this day may take.
+        # Otherwise the farthest card of the window this day may take, but not
+        # past the first day with cards to spare: the gap left behind is
+        # carried towards it, not beyond it, where nothing would fill it.
+        spare_day = next(
+            (s for s in range(day + 1, horizon + 1) if len(own[s]) > target[s - 1]),
+            None,
+        )
+        if spare_day is not None:
+            last = min(last, spare_day)
         for source in range(last, day, -1):
             card = from_day(source, day, siblings_ok)
             if card is not None:
@@ -886,28 +970,30 @@ def follow_curve(
     a given curve (see `custom_curve`) exactly: the window holds `curve[day]`
     cards on each day.
 
-    `cards` are the cards due from day 1 to `lookahead_end(horizon)`. Cards
-    are advanced where the curve wants more than is due (taking cards due
-    after the window if needed) and postponed where it wants less: the cards
-    left over once the window is full go to the day right after it. If there
-    are not enough cards for the whole curve, its last days are left short.
+    `cards` are the cards due from day 1 to `outside_end(horizon)`, and
+    `curve` should go as far, to compare the days after the window to it.
+    Cards are advanced where the curve wants more than is due and postponed
+    where it wants less. Cards the window lacks come from the days after it
+    above the curve, the ones it has too many of go to the days below it
+    (see `_outside_target`). If there are not enough cards for the whole
+    curve, its last days are left short.
 
     Cards are picked as in `assign_in_short_hops` (the smallest largest move,
     advance or postponement, relative to the interval, in short hops), then
     `fewer_moves` with `ceiling`; siblings kept apart.
     """
     target = list(curve[:horizon]) + [0] * (horizon - len(curve))
+    full, missing = _outside_target(cards, horizon, target, curve)
     # Not enough cards: the end of the window stays below the curve.
-    missing = sum(target) - len(cards)
     for index in range(horizon - 1, -1, -1):
         if missing <= 0:
             break
-        cut = min(missing, target[index])
-        target[index] -= cut
+        cut = min(missing, full[index])
+        full[index] -= cut
         missing -= cut
-    assigned = assign_both_ways(cards, target, taken)
-    few = fewer_moves(cards, target, assigned, True, taken, ceiling)
-    return daily_counts((day for day in few.values() if day <= horizon), horizon), few
+    assigned = assign_both_ways(cards, full, taken)
+    few = fewer_moves(cards, full, assigned, True, taken, ceiling)
+    return full[:horizon], few
 
 
 def assign_both_ways(

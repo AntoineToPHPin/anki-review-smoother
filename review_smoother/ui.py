@@ -27,7 +27,9 @@ from aqt.qt import (
     QLabel,
     QRadioButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
+    QWidget,
     Qt,
     qconnect,
 )
@@ -44,7 +46,7 @@ from .smoothing import (
     daily_counts,
     fill_gaps,
     follow_curve,
-    lookahead_end,
+    outside_end,
     move_stats,
     smooth,
 )
@@ -53,7 +55,8 @@ WEB_DIR = Path(__file__).parent / "web"
 
 # Shortcuts for the horizon, in days: the periods of the Future Due graph in
 # Anki's Statistics window, except 30 days for a month (Anki uses 31).
-RANGES = (("range_month", 30), ("range_three_months", 90), ("range_year", 365))
+RANGES = (("range_month", 30), ("range_three_months", 90), ("range_year", 365),
+          ("range_two_years", 730))
 
 # Size and position of the dialog, remembered by Anki between openings.
 GEOMETRY_KEY = "reviewSmoother"
@@ -100,14 +103,15 @@ def make_plan(
 ) -> Plan:
     """Smoothing of one deck (subdecks included), without changing anything.
 
-    `cards` also holds the cards due shortly after the window, which smoothing
-    may pull into it (see `lookahead_end`). `method`: see `METHODS`;
+    `cards` also holds the cards due after the window, up to `outside_end`:
+    smoothing takes the cards the window lacks from the days there that have
+    some to spare. `method`: see `METHODS`;
     `allow_postpone` only applies to "auto", `settings` to "custom"."""
     today = col.sched.today
     query = col.build_search_string(
         SearchNode(deck=deck),
         "is:review -is:learn -is:suspended -is:buried -deck:filtered",
-        f"prop:due>=1 prop:due<={lookahead_end(horizon)}",
+        f"prop:due>=1 prop:due<={outside_end(horizon)}",
     )
     ids = col.find_cards(query)
     rows = col.db.all(f"select id, nid, due, ivl from cards where id in {ids2str(ids)}")
@@ -120,9 +124,10 @@ def make_plan(
     config = mw.addonManager.getConfig(__name__) or {}
     ceiling = float(config.get("move_ceiling_percent", MOVE_CEILING * 100)) / 100
     if method == "custom" and settings is not None:
-        curve = custom_curve(settings, horizon)
+        # Carried on after the window: the days there are compared to it.
+        curve = custom_curve(settings, outside_end(horizon))
         after, new_due = follow_curve(cards, horizon, curve, taken, ceiling)
-        return Plan(horizon, cards, before, after, new_due, curve)
+        return Plan(horizon, cards, before, after, new_due, curve[:horizon])
     if method == "gaps":
         after, new_due = fill_gaps(cards, horizon, taken, ceiling)
     else:
@@ -242,7 +247,7 @@ class SmoothDialog(QDialog):
             self.deck.setCurrentText(current)
 
         self.horizon = QSpinBox()
-        self.horizon.setRange(7, 365)
+        self.horizon.setRange(7, RANGES[-1][1])
         self.horizon.setSuffix(tr("days_suffix"))
         self.horizon.setValue(int(config.get("horizon_days", 90)))
 
@@ -255,9 +260,23 @@ class SmoothDialog(QDialog):
             self.method.addItem(tr(f"method_{method}"), method)
 
         # The custom curve's settings, as in the author's spreadsheet,
-        # remembered per deck; shown for the "custom" method only.
-        self.curve_box = QGroupBox(tr("curve_title"))
-        curve_form = QFormLayout(self.curve_box)
+        # remembered per deck; shown for the "custom" method only. Its title
+        # folds the fields away; they unfold whenever that method is chosen.
+        self.curve_box = QGroupBox()
+        box_layout = QVBoxLayout(self.curve_box)
+        self.curve_toggle = QToolButton()
+        self.curve_toggle.setText(tr("curve_title"))
+        self.curve_toggle.setToolTip(tr("curve_toggle"))
+        self.curve_toggle.setCheckable(True)
+        self.curve_toggle.setAutoRaise(True)
+        self.curve_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        title_font = self.curve_toggle.font()
+        title_font.setBold(True)
+        self.curve_toggle.setFont(title_font)
+        qconnect(self.curve_toggle.toggled, self.show_curve_fields)
+        self.curve_panel = QWidget()
+        curve_form = QFormLayout(self.curve_panel)
+        curve_form.setContentsMargins(0, 0, 0, 0)
         self.curve_fields: Dict[str, QSpinBox] = {}
         for key in ("tomorrow", "drop_day2", "drop_day3", "floor", "slope_x10000"):
             field = QSpinBox()
@@ -277,9 +296,13 @@ class SmoothDialog(QDialog):
         curve_hint.setWordWrap(True)
         curve_hint.setEnabled(False)
         curve_form.addRow(curve_hint)
+        # The curve's total against the cards due stays shown when folded.
         self.curve_total = QLabel()
         self.curve_total.setWordWrap(True)
-        curve_form.addRow(self.curve_total)
+        box_layout.addWidget(self.curve_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        box_layout.addWidget(self.curve_panel)
+        box_layout.addWidget(self.curve_total)
+        self.shown_method: Optional[str] = None
 
         # A shortcut sets the number of days, which can still be typed in.
         self.ranges = QButtonGroup(self)
@@ -406,6 +429,17 @@ class SmoothDialog(QDialog):
         # postpones whatever it needs to.
         self.postpone.setVisible(method == "auto")
         self.curve_box.setVisible(method == "custom")
+        # Unfolded each time the custom method is chosen (or opened with).
+        if method == "custom" and self.shown_method != "custom":
+            self.curve_toggle.setChecked(True)
+            self.show_curve_fields(True)
+        self.shown_method = method
+
+    def show_curve_fields(self, shown: bool) -> None:
+        self.curve_panel.setVisible(shown)
+        self.curve_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow
+        )
 
     def default_size(self) -> Tuple[int, int]:
         """Size on first opening: most of the screen the main window is on."""
