@@ -340,27 +340,23 @@ def smooth(
     cards due right after it are left out. The cards it pulls into the window
     come from days after it that have cards to spare (see `_outside_target`).
 
-    Cards are advanced only (see `auto_curve`), unless
-    `allow_postpone`: then the peak at the start of the curve is lowered one
-    card a day at a time, by postponing cards within their margin, as long as
-    that postpones no more cards than the budget, creates no steeper step
-    than the advance-only curve has, and leaves no top plateau more than one
-    day longer than the plateau below it (see `_top_plateau_too_long`).
+    The curve is the most regular staircase (see `regular_staircase`) holding
+    the window's cards plus those `auto_curve` pulls into it.
 
-    Those last two rules keep postponing for isolated bumps (4, 3, 3, 3...
+    Cards are advanced only, unless `allow_postpone`: then the peak at the
+    start of `auto_curve`'s curve is lowered one card a day at a time, by
+    postponing cards within their margin, as long as that postpones no more
+    cards than the budget and creates no steeper step than the advance-only
+    curve has. That keeps postponing for isolated bumps (4, 3, 3, 3...
     becomes 3, 3, 3, 3...) and away from steady slopes: capping 18, 17, 17,
     16, 15... would turn it into a plateau ending with a cliff (16 x 7 days,
-    then 13), and capping 18, 17, 16, 16, 16, 14... into a long plateau
-    (16 x 6 days, then 15, 14...).
+    then 13). Postponing only concerns the cards of the window, and keeps
+    them in it; the regular staircase is then built on the shifted cards.
 
-    Postponing only concerns the cards of the window, and keeps them in it;
-    the rules above look at the window part of the curves only.
-
-    Finally, plateaus of the window are evened out (see `even_out`), and the
-    cards are picked by `assign_in_short_hops` (the smallest largest advance
-    relative to the interval), then `fewer_moves` (as few cards as possible
-    within the larger of that and `ceiling`), which keep siblings apart:
-    `taken` gives the days of the siblings outside `cards`.
+    The cards are picked by `assign_in_short_hops` (the smallest largest
+    advance relative to the interval), then `fewer_moves` (as few cards as
+    possible within the larger of that and `ceiling`), which keep siblings
+    apart: `taken` gives the days of the siblings outside `cards`.
     """
     end = lookahead_end(horizon)
     window = [c for c in cards if c.due <= horizon]
@@ -384,13 +380,18 @@ def smooth(
             # after it): postponing then does not lower it.
             if lowered[0] >= target[0]:
                 break
-            if _steepest_step(lowered[:horizon]) > steepest or _top_plateau_too_long(
-                lowered[:horizon]
-            ):
+            if _steepest_step(lowered[:horizon]) > steepest:
                 break
             shifted, target = candidate, lowered
-    # Evening out only moves cards earlier, so the whole curve stays reachable.
-    target = even_out(target[:horizon])
+    total = sum(target[:horizon])
+    due = daily_counts((c.due for c in shifted if c.due <= horizon), horizon)
+    target = regular_staircase(due, total)
+    if shifted is not cards:
+        # Postponing is only worth it if the regular staircase starts lower.
+        due = daily_counts((c.due for c in window), horizon)
+        unshifted = regular_staircase(due, total)
+        if target[0] >= unshifted[0]:
+            shifted, target = cards, unshifted
     # The cards pulled into the window come from days after it that have
     # cards to spare (see `_outside_target`).
     full, _ = _outside_target(shifted, horizon, target)
@@ -818,95 +819,176 @@ def _steepest_step(curve: Sequence[int]) -> int:
     return max((a - b for a, b in zip(curve, curve[1:])), default=0)
 
 
-def _top_plateau_too_long(curve: Sequence[int]) -> bool:
-    """Whether the first plateau of the curve, as shown (after `even_out`),
-    is more than one day longer than the next one.
+def regular_staircase(due: Sequence[int], total: int) -> List[int]:
+    """The most regular staircase holding `total` cards over the days of
+    `due` (cards due on days 1, 2...), reachable by advancing cards only.
 
-    `even_out` never shortens the top plateau, so a peak lowered too far would
-    stay a long block of days at the same level. As in `even_out`, the plateau
-    at the level of the last day is no reference (its length only reflects
-    where the window ends): if it is the top or the next one, any length goes.
+    Regular (the author's rule, 2026-11-16): going down, each plateau (days
+    at one level) lasts **at least as long as the one above it**, and the
+    curve goes down one card at a time. Two exceptions: the last plateau,
+    cut by the end of the window, and the 0s, may be of any length; and
+    between plateaus of one day (a steep start, 55, 51, 48...), the curve may
+    go down by more than one card, by never more than the step before (6, 4,
+    4 is a cliff: not allowed).
+    Reachable: on every day, the cards scheduled up to it are at least the
+    cards due up to it (`total` may be more: cards pulled from after the
+    window).
+
+    Among those staircases, J1 included, the one that **advances cards the
+    least in total** (the sum, over the days, of the cards scheduled up to
+    that day beyond those due; that is the sum of every card's advance in
+    days). So the first days rise when that spares longer advances later:
+    Bepo::Caracteres over 90 days, 16 x 3, 15 x 5, 14 x 4, 13 x 1, 12 x 2...
+    once evened out, becomes 19, 18, 17, 16 x 2... 11 x 2, 10 x 3, 9 x 4...,
+    with 149 days of advance instead of 592.
+
+    A* search, day by day. A state is the day, the level, the days spent at
+    it, the days it must still last, the largest next step and the cards
+    scheduled so far. Pruned: states dominated by another one on the same
+    day, level and cards (a shorter plateau, no longer to wait, no more
+    advance), states that cannot keep up with the cards due without going
+    above their level, and states whose fastest descent already holds too
+    many cards. The bound: the cheapest curve of whole cards, never
+    increasing, above what is due (the least concave majorant of the due
+    counts from the state, rounded down and its daily counts sorted, as in
+    `auto_curve`), shape rule left out.
     """
-    shown = even_out(curve)
-    if not shown:
-        return False
-    top = shown.count(shown[0])
-    if top == len(shown) or shown[top] == shown[-1]:
-        return False
-    return top > shown.count(shown[top]) + 1
+    days = len(due)
+    if days == 0:
+        return []
+    if total == 0:
+        return [0] * days
+    due_by = [0] + list(accumulate(due))
+    if total < due_by[days]:
+        raise ValueError(f"{total} cards, fewer than the {due_by[days]} due.")
+    points = [(day, due_by[day]) for day in range(days + 1)]
+    points[days] = (days, total)
 
+    bounds: Dict[Tuple[int, int], int] = {}
 
-def even_out(curve: Sequence[int]) -> List[int]:
-    """Make the staircase more regular by evening out plateau lengths.
+    def bound(day: int, cards: int) -> int:
+        """Advance of the days after `day`, at least."""
+        value = bounds.get((day, cards))
+        if value is None:
+            hull = _upper_hull([(day, cards)] + points[day + 1:])
+            counts: List[int] = []
+            for (x1, y1), (x2, y2) in zip(hull, hull[1:]):
+                low, high = divmod(y2 - y1, x2 - x1)
+                counts += [low + 1] * high + [low] * (x2 - x1 - high)
+            counts.sort(reverse=True)
+            value, scheduled = 0, cards
+            for later, count in zip(range(day + 1, days + 1), counts):
+                scheduled += count
+                value += scheduled - due_by[later]
+            bounds[(day, cards)] = value
+        return value
 
-    Going down the staircase, plateaus (the days at one level) should get
-    longer gradually. A block of plateaus at consecutive levels gives one day
-    to the level above it and one to the level below it (its first day goes
-    up by one card, its last day down by one) when:
-    - its top plateau is at least 2 days longer than the one above it, so
-      that jump shrinks;
-    - its bottom plateau is longer than the one below it (a dip, which then
-      turns into a rise), or at least 2 days longer for a single plateau,
-      which loses 2 days.
-    Plateaus inside the block keep their length. Jumps are handled from the
-    peak down; for each, the shortest block that can absorb it is used.
+    lowest: Dict[Tuple[int, int], int] = {}
 
-    Examples: 14, 13, 12, 12, 12, 11, 10 becomes 14, 13, 13, 12, 11, 11, 10
-    (single plateau); in 10 x 1, 9 x 2, 8 x 4, 7 x 5, 6 x 7, 5 x 7, 4 x 6, the
-    block from 8 to 5 takes a day from the jump between 9 and 8 and gives it
-    to the dip at 4.
+    def keeps_up(day: int, level: int, cards: int) -> bool:
+        """Whether a curve never above `level` from now can keep up with
+        the cards due and reach the total."""
+        need = lowest.get((day, level))
+        if need is None:
+            need = max(due_by[later] - level * (later - day) for later in range(day, days + 1))
+            need = max(need, total - level * (days - day))
+            lowest[(day, level)] = need
+        return cards >= need
 
-    When the curve ends at 1 or 0 cards a day, days at 0 are a level like the
-    others, and the plateau of 1s also gives them a day while it is at least
-    as long: they absorb the jumps that no dip can (the author prefers more
-    days at 3 and 2 and fewer at 1, even if it leaves empty days at the end of
-    the window). Otherwise the plateau at the level of the last day is left
-    out, as a neighbour too: its length only reflects where the window ends.
+    def fastest(day: int, level: int, wait: int, step: int, length: int, cards: int) -> int:
+        """Cards over the window if the curve goes down as fast as allowed:
+        `wait` more days at `level`, then down by `step` every `length` days."""
+        while day < days and level > 0:
+            if wait == 0:
+                level = max(0, level - step)
+                wait = length
+                continue
+            n = min(wait, days - day)
+            cards += level * n
+            day += n
+            wait -= n
+        return cards
 
-    Each change moves one card earlier, so it never requires postponing
-    anything; the total and the descending order are kept. A block of several
-    plateaus never gives days to the peak's plateau: repeated, that would
-    lengthen the peak a lot (4 x 5, 3 x 37, 2 x 46, 1 x 2 would reach 4 x 22),
-    advancing cards to the busiest days. A single plateau still may, one day
-    at a time (5, 4, 4, 4, 4, 3 becomes 5, 5, 4, 4, 3, 3).
-    """
-    result = list(curve)
-    if not result:
-        return result
-    # Lowest level that may give days.
-    lowest = 1 if result[-1] <= 1 else result[-1] + 2
-    # Each change moves a card earlier, so this ends; the cap is a safeguard.
-    for _ in range(sum(result) * len(result) + 1):
-        lengths: Dict[int, int] = {}
-        for level in result:
-            lengths[level] = lengths.get(level, 0) + 1
-        block = next(
-            (
-                (high, low)
-                for high in range(result[0] - 1, lowest - 1, -1)
-                for low in range(high, lowest - 1, -1)
-                if (low == high or high + 1 < result[0])
-                and lengths.get(high, 0) >= lengths.get(high + 1, 0) + 2
-                and lengths.get(low, 0) >= lengths.get(low - 1, 0) + _dip(high, low)
-            ),
-            None,
-        )
-        if block is None:
-            break
-        high, low = block
-        result[result.index(high)] += 1
-        result[len(result) - 1 - result[::-1].index(low)] -= 1
-    return result
+    unlimited = total + 1
+    # Node: (day, level, run, wait, step_cap, cards).
+    Node = Tuple[int, int, int, int, int, int]
+    fronts: Dict[Tuple[int, int, int, int], List[Tuple[int, int, int]]] = {}
+    parents: Dict[Tuple[Node, int], Optional[Tuple[Node, int]]] = {}
+    heap: list = []
+    order = 0
 
+    def push(node: Node, advance: int, parent: Optional[Tuple[Node, int]]) -> None:
+        nonlocal order
+        day, level, run, wait, cap, cards = node
+        key = (day, level, cap, cards)
+        front = fronts.setdefault(key, [])
+        if any(r <= run and w <= wait and a <= advance for r, w, a in front):
+            return
+        if not keeps_up(day, level, cards):
+            return
+        if level > 0:
+            step = cap if run == 1 and cap > 1 else 1
+            length = 1 if step > 1 else run + wait
+            if fastest(day, level, wait, step, length, cards) > total:
+                return
+        front[:] = [
+            (r, w, a) for r, w, a in front if not (run <= r and wait <= w and advance <= a)
+        ]
+        front.append((run, wait, advance))
+        parents[(node, advance)] = parent
+        order += 1
+        heapq.heappush(heap, (advance + bound(day, cards), advance, order, node))
 
-def _dip(high: int, low: int) -> int:
-    """How much longer than the plateau below it the bottom plateau of the
-    block high..low must be for `even_out` to use that block."""
-    if low == high:
-        return 2  # a single plateau loses 2 days
-    if low == 1:
-        return 0  # days at 0 absorb what no dip can
-    return 1
+    for top in range(max(1, due_by[1]), total + 1):
+        push((1, top, 1, 0, unlimited, top), top - due_by[1], None)
+
+    while heap:
+        _, advance, _, node = heapq.heappop(heap)
+        day, level, run, wait, cap, cards = node
+        if (run, wait, advance) not in fronts.get((day, level, cap, cards), ()):
+            continue  # dominated since it was pushed
+        if day == days:
+            if cards != total:
+                continue
+            curve: List[int] = []
+            entry: Optional[Tuple[Node, int]] = (node, advance)
+            while entry is not None:
+                curve.append(entry[0][1])
+                entry = parents[entry]
+            return curve[::-1]
+        here = (node, advance)
+        # One more day at this level (after a day, steps of one card); not
+        # after a step of more than one card, which only joins one-day
+        # plateaus.
+        more = cards + level
+        stretchable = level == 0 or cap <= 1 or cap == unlimited
+        if stretchable and due_by[day + 1] <= more <= total:
+            if level == 0:
+                push((day + 1, 0, 0, 0, 0, more), advance + more - due_by[day + 1], here)
+            else:
+                push(
+                    (day + 1, level, run + 1, max(0, wait - 1), 1, more),
+                    advance + more - due_by[day + 1],
+                    here,
+                )
+        # Down, once the plateau is long enough; the next one lasts at least
+        # as long.
+        if wait == 0 and level > 0:
+            for drop in range(1, min(level, cap if run == 1 else 1) + 1):
+                below = level - drop
+                more = cards + below
+                if not due_by[day + 1] <= more <= total:
+                    continue
+                if below == 0:
+                    if more == total:
+                        push((day + 1, 0, 0, 0, 0, more), advance + more - due_by[day + 1], here)
+                else:
+                    push(
+                        (day + 1, below, 1, run - 1, drop, more),
+                        advance + more - due_by[day + 1],
+                        here,
+                    )
+    raise ValueError("No regular staircase reaches the total.")  # cannot happen
 
 
 @dataclass(frozen=True)

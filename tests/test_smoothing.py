@@ -1,5 +1,6 @@
 import itertools
 import random
+import time
 import unittest
 from dataclasses import replace
 from itertools import accumulate
@@ -14,12 +15,12 @@ from review_smoother.smoothing import (
     auto_curve,
     custom_curve,
     daily_counts,
-    even_out,
     fill_gaps,
     follow_curve,
     largest_share,
     levels,
     lookahead_end,
+    regular_staircase,
     smooth,
 )
 
@@ -198,81 +199,133 @@ def plateau_lengths(curve):
     return lengths
 
 
-class EvenOutTest(unittest.TestCase):
-    def test_long_plateau_between_short_ones_is_split(self):
-        # The author's example on Bepo::Caracteres.
+def is_regular(curve):
+    """The rule of `regular_staircase`: plateaus at least as long as the one
+    above, steps of one card except between one-day plateaus (never larger
+    than the step before); the last plateau and the 0s are free."""
+    plateaus = []
+    for level in curve:
+        if plateaus and plateaus[-1][0] == level:
+            plateaus[-1][1] += 1
+        else:
+            plateaus.append([level, 1])
+    previous_drop = None
+    for (level, days), (below, below_days) in zip(plateaus, plateaus[1:]):
+        drop = level - below
+        if drop < 1:
+            return False
+        if drop > 1 and (days > 1 or (below > 0 and below_days > 1)):
+            return False
+        if previous_drop is not None and drop > previous_drop:
+            return False
+        previous_drop = drop
+    for (level, days), (below, below_days) in zip(plateaus, plateaus[1:-1]):
+        if below > 0 and below_days < days:
+            return False
+    return True
+
+
+def non_increasing(days, total, top):
+    """Every non-increasing curve of `days` days holding `total` cards, none
+    above `top`."""
+    if days == 0:
+        if total == 0:
+            yield []
+        return
+    for first in range(min(top, total), -1, -1):
+        if first * days < total:
+            break
+        for rest in non_increasing(days - 1, total - first, first):
+            yield [first] + rest
+
+
+def advance(curve, due):
+    """Total advance, in card-days."""
+    return sum(t - d for t, d in zip(accumulate(curve), accumulate(due)))
+
+
+def staircase(plateaus):
+    return [level for level, days in plateaus for _ in range(days)]
+
+
+class RegularStaircaseTest(unittest.TestCase):
+    def test_bepo_rises_rather_than_advance_more(self):
+        # Bepo::Caracteres over 30 days (2026-11-16): about 15 cards a day
+        # for 12 days, then a fast drop. Evened out, 16 x 3, 15 x 5, 14 x 4,
+        # 13 x 1, 12 x 2... is not regular; rising to 19 advances the cards
+        # the least.
+        due = staircase(
+            [(16, 2), (15, 1), (16, 1), (15, 2), (14, 3), (16, 1), (14, 2), (13, 1),
+             (12, 2), (10, 3), (9, 4), (8, 5), (7, 2), (8, 1)]
+        )
         self.assertEqual(
-            even_out([15, 14, 13, 12, 12, 12, 11, 10, 9]),
-            [15, 14, 13, 13, 12, 11, 11, 10, 9],
+            regular_staircase(due, sum(due)),
+            staircase(
+                [(19, 1), (18, 1), (17, 1), (16, 2), (15, 2), (14, 2), (13, 2), (12, 2),
+                 (11, 2), (10, 3), (9, 4), (8, 6), (7, 2)]
+            ),
         )
 
-    def test_regular_staircase_is_kept(self):
-        curve = [5, 5, 4, 4, 3, 3, 2, 2, 1, 1]
-        self.assertEqual(even_out(curve), curve)
+    def test_a_regular_curve_is_kept(self):
+        for curve in (
+            [5, 4, 4, 3, 3, 3, 2, 2, 2, 2],
+            [4] * 13 + [3] * 77,
+            [3, 2, 2, 2, 1, 1, 1, 1, 0, 0],
+        ):
+            self.assertEqual(regular_staircase(curve, sum(curve)), curve)
 
-    def test_plateau_at_the_end_of_the_window_is_left_out(self):
-        # 2 x 46 is much longer than 3 x 37, but it only ends because the
-        # window does.
-        curve = [4] * 5 + [3] * 37 + [2] * 46
-        self.assertEqual(even_out(curve), curve)
+    def test_ones_are_kept_rather_than_emptying_the_last_days(self):
+        # The author chose the rule alone (2026-11-16): the last days are no
+        # longer emptied to lengthen the 2s (2 x 31, 1 x 32, 0 x 27 before).
+        curve = [2] * 4 + [1] * 86
+        self.assertEqual(regular_staircase(curve, sum(curve)), curve)
 
-    def test_jump_and_dip_are_evened_out(self):
-        # The author's remarks on Bepo::Caracteres: 9 x 2 then 8 x 4 is a
-        # jump, 4 x 6 between 5 x 7 and 3 x 9 a dip.
-        def staircase(plateaus):
-            return [level for level, days in plateaus for _ in range(days)]
+    def test_steep_start_goes_down_by_more_than_one_card(self):
+        due = [10, 6, 3, 1, 0, 0]
+        curve = regular_staircase(due, 20)
+        self.assertTrue(is_regular(curve), curve)
+        self.assertEqual(sum(curve), 20)
+        self.assertGreater(curve[0] - curve[1], 1)
 
-        curve = staircase([(11, 2), (10, 1), (9, 2), (8, 4), (7, 5), (6, 7), (5, 7), (4, 6), (3, 9)])
-        self.assertEqual(
-            even_out(curve),
-            staircase([(11, 2), (10, 2), (9, 2), (8, 3), (7, 5), (6, 6), (5, 7), (4, 7), (3, 9)]),
-        )
+    def test_no_cliff_after_a_one_day_peak(self):
+        # 6, 4, 4... would drop by 2 cards onto a 2-day plateau.
+        for due in ([5, 4, 4, 4, 4, 2, 2, 2, 2, 1, 1], [6, 4, 4, 3, 3, 3, 2, 2, 2]):
+            curve = regular_staircase(due, sum(due))
+            self.assertTrue(is_regular(curve), curve)
 
-    def test_long_tail_of_ones_gives_days_down_to_zero(self):
-        # The author's request on Bepo::Caracteres: more days at 3 and 2,
-        # fewer at 1, even if days at 0 are left at the end.
-        curve = [4] * 6 + [3] * 7 + [2] * 7 + [1] * 32
-        self.assertEqual(
-            even_out(curve), [4] * 6 + [3] * 11 + [2] * 11 + [1] * 12 + [0] * 12
-        )
+    def test_cards_pulled_in_raise_the_total(self):
+        curve = regular_staircase([3, 3, 3, 0], 10)
+        self.assertEqual(sum(curve), 10)
+        self.assertTrue(is_regular(curve), curve)
 
-    def test_same_when_the_curve_already_ends_with_zeros(self):
-        curve = [3] * 2 + [2] * 20 + [1] * 30 + [0] * 4
-        self.assertEqual(even_out(curve), [3] * 2 + [2] * 23 + [1] * 24 + [0] * 7)
-
-    def test_two_plateaus_never_give_days_to_the_peak(self):
-        # 2 x 40 and 1 x 40 are long, but giving days to the peak's 3 x 5
-        # would advance cards to the busiest days.
-        curve = [3] * 5 + [2] * 40 + [1] * 40
-        self.assertEqual(even_out(curve), curve)
-
-    def test_sparse_deck_of_ones_is_kept(self):
-        # Nothing above the 1s: they are the peak.
-        curve = [1] * 88 + [0] * 2
-        self.assertEqual(even_out(curve), curve)
-
-    def test_random_curves_only_move_cards_earlier(self):
-        rng = random.Random(5)
+    def test_least_advance_among_all_regular_staircases(self):
+        rng = random.Random(16)
         for _ in range(300):
-            horizon = rng.randint(1, 90)
-            counts = [rng.choice([0, 1, 2, 3, 5, 12]) for _ in range(horizon)]
-            curve = auto_curve(counts)
-            even = even_out(curve)
-            self.assertEqual(sum(even), sum(curve))
-            self.assertTrue(all(a >= b for a, b in zip(even, even[1:])), even)
-            for evened, original in zip(accumulate(even), accumulate(curve)):
-                self.assertGreaterEqual(evened, original)
-            lengths = plateau_lengths(even)
-            n = lambda level: lengths.get(level, 0)
-            lowest = 1 if even[-1] <= 1 else even[-1] + 2
-            for high in range(even[0] - 1, lowest - 1, -1):
-                for low in range(high, lowest - 1, -1):
-                    if low == high or high + 1 < even[0]:
-                        dip = 2 if low == high else 0 if low == 1 else 1
-                        self.assertFalse(
-                            n(high) >= n(high + 1) + 2 and n(low) >= n(low - 1) + dip,
-                            even,
-                        )
+            days = rng.randint(1, 7)
+            due = [rng.randint(0, 4) for _ in range(days)]
+            total = sum(due) + rng.randint(0, 2)
+            curve = regular_staircase(due, total)
+            self.assertTrue(is_regular(curve), (due, total, curve))
+            self.assertEqual(sum(curve), total)
+            for got, needed in zip(accumulate(curve), accumulate(due)):
+                self.assertGreaterEqual(got, needed)
+            best = min(
+                advance(c, due)
+                for c in non_increasing(days, total, total)
+                if is_regular(c)
+                and all(g >= n for g, n in zip(accumulate(c), accumulate(due)))
+            )
+            self.assertEqual(advance(curve, due), best, (due, total, curve))
+
+    def test_long_window_is_quick(self):
+        # Two years, a steep start and a sparse tail.
+        rng = random.Random(3)
+        due = [max(0, int(40 * 0.97 ** day) + rng.choice([-1, 0, 0, 1])) for day in range(730)]
+        start = time.perf_counter()
+        curve = regular_staircase(due, sum(due))
+        self.assertLess(time.perf_counter() - start, 5)
+        self.assertTrue(is_regular(curve), curve)
+
 
 def cards_from_counts(counts, interval):
     days = [day for day, n in enumerate(counts, start=1) for _ in range(n)]
