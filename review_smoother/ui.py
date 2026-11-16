@@ -325,7 +325,10 @@ class SmoothDialog(QDialog):
         form.addRow(self.curve_box)
 
         self.web = AnkiWebView(self, title="review smoother")
-        self.web.setMinimumSize(760, 560)
+        # Low enough that the form (with the custom curve's fields) and the
+        # buttons fit a maximized window: the graphs shrink, not the buttons
+        # (560 pushed the buttons off a laptop screen, 2026-11-16).
+        self.web.setMinimumSize(760, 280)
         self.web.stdHtml(graph_html(), js=[], context=self)
         # How to zoom the graphs (see web/graph.js), greyed out.
         hint = QLabel(tr("zoom_hint"))
