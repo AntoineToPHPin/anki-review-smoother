@@ -250,7 +250,7 @@ MOVE_CEILING = 0.05
 
 def lookahead_end(horizon: int) -> int:
     """Last day of the cards that shape the end of the window: `smooth`
-    computes its curve up to there, `fill_gaps` its levels; and the last day
+    computes its curve up to there; and the last day
     a card may be taken from (or put on) when no day after the window is
     above (or below) its reference (see `_outside_target`)."""
     return horizon + int(horizon * LOOKAHEAD)
@@ -422,134 +422,6 @@ def levels(counts: Sequence[int]) -> List[int]:
         # Rounded half up: 1.5 cards a day is level 2.
         result += [math.floor(Fraction(cards, days) + Fraction(1, 2))] * days
     return result
-
-
-def fill_gaps(
-    cards: Sequence[Card],
-    horizon: int,
-    taken: Optional[Taken] = None,
-    ceiling: float = MOVE_CEILING,
-) -> Tuple[List[int], Dict[int, int]]:
-    """Daily counts over the window and new due day of every card, when only
-    filling the gaps: the current shape of the curve is kept, and only the
-    days below their level (see `levels`) get cards, up to it.
-
-    The alternative to `smooth` for decks whose curve is fine apart from a few
-    gaps: 2, 2, 2, 1, 1... 1, 0, 3 becomes 2, 2, 2, 2, 1... 1, 1, 1, where
-    `smooth` would make longer plateaus at 2 and 1, then days at 0.
-
-    `cards` are the cards due from day 1 to `outside_end(horizon)`; levels
-    are computed up to `lookahead_end(horizon)`. Gaps are filled from the
-    first one, each with the nearest later cards: from days above their level
-    (which are lowered at most to it, never into a new gap), or from the
-    cards due after the window, which are pulled into it (the cards that
-    actually come in are then taken from days after the window with cards to
-    spare: see `_outside_target`). On a day,
-    the card with the longest interval goes first, the one that advancing
-    matters least for; a card is not moved next to a sibling (see `assign`)
-    while another can come. A gap stays partly empty if no later card is left.
-
-    Then, while a day of the window holds more cards than the day before it,
-    one of its cards goes to the first step down of the curve before it
-    (where a day holds fewer cards than the day before it) that falls below
-    that day's count, which lengthens the plateau above that step: the 3
-    cards on day 90 above, once one filled day 89, leave one on day 4, after
-    the 2s; a single card after empty days goes to the first empty day. So
-    the window ends up non-increasing without any new peak (3, 3, 2, 2... 4
-    gives 3, 3, 3, 3, 2...); the first day only gets a card if the curve is
-    flat before the rise.
-    Cards are only ever advanced.
-    """
-    taken = taken or {}
-    end = lookahead_end(horizon)
-    near = [c for c in cards if c.due <= end]
-    level = levels(daily_counts((c.due for c in near), end))
-    on_day: List[List[Card]] = [[] for _ in range(end + 1)]
-    for card in near:
-        on_day[card.due].append(card)
-    for day_cards in on_day:
-        # Longest interval first (ties by id, for a stable result).
-        day_cards.sort(key=lambda c: (-c.interval, c.id))
-    note_days: Dict[object, Set[int]] = {}
-    for card in cards:
-        note_days.setdefault(card.note_key, set()).add(card.due)
-
-    def has_sibling_on(card: Card, day: int) -> bool:
-        return day in note_days.get(card.note_key, ()) or (
-            card.note is not None and day in taken.get(card.note, ())
-        )
-
-    def spare(day: int) -> int:
-        """Cards that may leave `day`: those above its level in the window,
-        all of them after it."""
-        if day > horizon:
-            return len(on_day[day])
-        return len(on_day[day]) - level[day - 1]
-
-    def take(gap: int) -> Optional[Card]:
-        """Nearest later card that may fill `gap`, removed from its day."""
-        fallback: Optional[Tuple[int, Card]] = None
-        for day in range(gap + 1, end + 1):
-            if spare(day) <= 0:
-                continue
-            for card in on_day[day]:
-                if not has_sibling_on(card, gap):
-                    on_day[day].remove(card)
-                    return card
-                fallback = fallback or (day, card)
-        # Only siblings left: rather that than an empty day.
-        if fallback is None:
-            return None
-        day, card = fallback
-        on_day[day].remove(card)
-        return card
-
-    new_due = {c.id: c.due for c in cards}
-
-    def move(card: Card, day: int) -> None:
-        on_day[day].append(card)
-        new_due[card.id] = day
-        note_days.setdefault(card.note_key, set()).add(day)
-
-    for gap in range(1, horizon + 1):
-        while len(on_day[gap]) < level[gap - 1]:
-            card = take(gap)
-            if card is None:
-                break
-            move(card, gap)
-
-    # Cards left above the curve go to the first step down before them.
-    count = lambda day: len(on_day[day])  # noqa: E731
-    while True:
-        rise = next(
-            (day for day in range(2, horizon + 1) if count(day) > count(day - 1)), None
-        )
-        if rise is None:
-            break
-        # First step down below the count of that day: a 2 after 1s goes
-        # after the 2s, a 1 after empty days to the first empty day.
-        step = next(
-            (
-                day
-                for day in range(2, rise)
-                if count(day) < count(day - 1) and count(day) < count(rise)
-            ),
-            1,
-        )
-        card = next(
-            (c for c in on_day[rise] if not has_sibling_on(c, step)), on_day[rise][0]
-        )
-        on_day[rise].remove(card)
-        move(card, step)
-
-    # The curve is set; which cards make it is chosen again, the cards pulled
-    # in coming from days after the window with cards to spare (see
-    # `_outside_target`): short hops, then fewer cards within the ceiling.
-    target = [count(day) for day in range(1, horizon + 1)]
-    full, _ = _outside_target(cards, horizon, target)
-    assigned = assign_in_short_hops(cards, full, taken)
-    few = fewer_moves(cards, full, assigned, False, taken, ceiling)
-    return target, few
 
 
 def largest_share(cards: Sequence[Card], new_due: Mapping[int, int]) -> float:

@@ -15,7 +15,6 @@ from review_smoother.smoothing import (
     auto_curve,
     custom_curve,
     daily_counts,
-    fill_gaps,
     follow_curve,
     largest_share,
     levels,
@@ -498,123 +497,6 @@ class LevelsTest(unittest.TestCase):
             self.assertTrue(all(a >= b for a, b in zip(result, result[1:])))
 
 
-class FillGapsTest(unittest.TestCase):
-    def moved(self, cards, new_due):
-        return sorted((c.due, new_due[c.id]) for c in cards if new_due[c.id] != c.due)
-
-    def test_only_the_gap_is_filled(self):
-        # Musique::Pistes d'album over 90 days: 2, 2, 2, then 1s, an empty
-        # day 89 and 3 cards on day 90. The empty day takes one of them, the
-        # extra one goes after the 2s; `smooth` would have made 31 days at 2.
-        counts = [2] * 3 + [1] * 85 + [0, 3]
-        cards = cards_from_counts(counts, interval=300)
-        target, new_due = fill_gaps(cards, 90)
-        self.assertEqual(target, [2] * 4 + [1] * 86)
-        # Neither one card from day 90 to day 4 (30% of its interval) nor 86
-        # hops of one day: hops of 15 days, 5% of the interval.
-        self.assertEqual(
-            self.moved(cards, new_due),
-            [(19, 4), (34, 19), (49, 34), (64, 49), (79, 64), (90, 79), (90, 89)],
-        )
-
-    def test_without_a_ceiling_the_shortest_largest_move(self):
-        # The short hops need one hop of 2 days (90 -> 88): hops of 2 days
-        # then, half as many cards as hops of one day.
-        counts = [2] * 3 + [1] * 85 + [0, 3]
-        cards = cards_from_counts(counts, interval=300)
-        _, new_due = fill_gaps(cards, 90, ceiling=0)
-        moves = self.moved(cards, new_due)
-        self.assertTrue(all(due - day <= 2 for due, day in moves))
-        self.assertLessEqual(len(moves), 45)
-
-    def test_a_bump_lengthens_the_plateau_above_without_a_new_peak(self):
-        cards = cards_from_counts([3, 3, 2, 2, 2, 2, 4, 2], interval=50)
-        target, new_due = fill_gaps(cards, 8)
-        self.assertEqual(target, [3, 3, 3, 3, 2, 2, 2, 2])
-        # Within 5% of the interval of 50 days: 2 days at most.
-        self.assertTrue(all(c.due - new_due[c.id] <= 2 for c in cards))
-
-    def test_a_card_after_empty_days_goes_to_the_first_empty_day(self):
-        # Not after the 2s: the step from 2 to 1 is not below 1.
-        cards = cards_from_counts([2, 2, 1, 1, 0, 0, 1], interval=50)
-        target, new_due = fill_gaps(cards, 7)
-        self.assertEqual(target, [2, 2, 1, 1, 1, 0, 0])
-        self.assertEqual(self.moved(cards, new_due), [(7, 5)])
-
-    def test_a_bump_on_a_flat_curve_goes_to_the_first_day(self):
-        cards = cards_from_counts([2, 2, 2, 3], interval=50)
-        target, _ = fill_gaps(cards, 4)
-        self.assertEqual(target, [3, 2, 2, 2])
-
-    def test_a_curve_without_gaps_is_left_as_it_is(self):
-        cards = cards_from_counts([5, 4, 4, 3, 3, 3, 2, 2, 1, 1], interval=50)
-        target, new_due = fill_gaps(cards, 10)
-        self.assertEqual(target, [5, 4, 4, 3, 3, 3, 2, 2, 1, 1])
-        self.assertEqual(self.moved(cards, new_due), [])
-
-    def test_a_gap_takes_a_card_due_after_the_window(self):
-        # 8 days, cards looked at up to day 10 (0, 1, 1 is at level 1). Days
-        # 9 and 10 are at their reference (1, 1): none has a card to spare,
-        # so the card comes from as far as possible, day 10, not day 9 (which
-        # would show as a gap in the window the next day).
-        cards = cards_from_counts([1] * 7 + [0, 1, 1], interval=50)
-        target, new_due = fill_gaps(cards, 8)
-        self.assertEqual(target, [1] * 8)
-        self.assertEqual(self.moved(cards, new_due), [(10, 8)])
-
-    def test_a_gap_takes_a_card_from_a_day_with_one_to_spare(self):
-        # After the window, 1, 1, 2 is at level 1: day 11 has a card to
-        # spare; days 9 and 10 keep theirs.
-        cards = cards_from_counts([1] * 7 + [0, 1, 1, 2], interval=50)
-        target, new_due = fill_gaps(cards, 8)
-        self.assertEqual(target, [1] * 8)
-        after = daily_counts((d for d in new_due.values()), 11)
-        self.assertEqual(after, [1] * 11)
-
-    def test_no_gap_where_the_cards_after_the_window_are_sparse(self):
-        # 0, 0, 1 is at level 0: day 8 stays empty.
-        cards = cards_from_counts([1] * 7 + [0, 0, 1], interval=50)
-        target, new_due = fill_gaps(cards, 8)
-        self.assertEqual(target, [1] * 7 + [0])
-        self.assertEqual(self.moved(cards, new_due), [])
-
-    def test_the_longest_interval_moves(self):
-        cards = [
-            Card(id=1, due=1, interval=10),
-            Card(id=2, due=3, interval=10),
-            Card(id=3, due=3, interval=90),
-        ]
-        _, new_due = fill_gaps(cards, 3)
-        self.assertEqual(new_due, {1: 1, 2: 3, 3: 2})
-
-    def test_a_card_is_not_moved_next_to_a_sibling(self):
-        # Day 2 is empty; card 2's sibling is due that day in another deck.
-        cards = [
-            Card(id=1, due=1, interval=10, note=1),
-            Card(id=2, due=3, interval=90, note=2),
-            Card(id=3, due=3, interval=10, note=3),
-        ]
-        _, new_due = fill_gaps(cards, 3, taken={2: {2}})
-        self.assertEqual(new_due, {1: 1, 2: 3, 3: 2})
-
-    def test_only_advances_and_ends_non_increasing(self):
-        rng = random.Random(5)
-        for _ in range(200):
-            horizon = rng.randint(5, 60)
-            cards = random_cards(rng, rng.randint(0, 150), lookahead_end(horizon))
-            target, new_due = fill_gaps(cards, horizon)
-            counts = daily_counts((c.due for c in cards), lookahead_end(horizon))
-            level = levels(counts)
-            self.assertTrue(all(new_due[c.id] <= c.due for c in cards))
-            self.assertEqual(
-                target,
-                daily_counts(
-                    (d for d in new_due.values() if d <= horizon), horizon
-                ),
-            )
-            self.assertTrue(all(a >= b for a, b in zip(target, target[1:])))
-
-
 # The author's spreadsheet ("Planification musique.xlsx", 2026-11-12).
 SHEET = CurveSettings(
     tomorrow=55, drop_day2=4, drop_day3=3, floor=13, strength=19.01, slope=0.0194
@@ -733,11 +615,9 @@ class FewerMovesTest(unittest.TestCase):
         for _ in range(60):
             horizon = rng.randint(5, 60)
             cards = random_cards(rng, rng.randint(1, 150), lookahead_end(horizon))
-            for method in ("smooth", "gaps", "curve"):
+            for method in ("smooth", "curve"):
                 if method == "smooth":
                     run = lambda c: smooth(cards, horizon, False, ceiling=c)  # noqa: E731
-                elif method == "gaps":
-                    run = lambda c: fill_gaps(cards, horizon, ceiling=c)  # noqa: E731
                 else:
                     curve = [rng.randint(0, 4) for _ in range(horizon)]
                     run = lambda c: follow_curve(cards, horizon, curve, ceiling=c)  # noqa: E731

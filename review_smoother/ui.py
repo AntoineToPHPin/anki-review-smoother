@@ -44,7 +44,6 @@ from .smoothing import (
     CurveSettings,
     custom_curve,
     daily_counts,
-    fill_gaps,
     follow_curve,
     outside_end,
     move_stats,
@@ -128,16 +127,14 @@ def make_plan(
         curve = custom_curve(settings, outside_end(horizon))
         after, new_due = follow_curve(cards, horizon, curve, taken, ceiling)
         return Plan(horizon, cards, before, after, new_due, curve[:horizon])
-    if method == "gaps":
-        after, new_due = fill_gaps(cards, horizon, taken, ceiling)
-    else:
-        after, new_due = smooth(cards, horizon, allow_postpone, taken, ceiling)
+    after, new_due = smooth(cards, horizon, allow_postpone, taken, ceiling)
     return Plan(horizon, cards, before, after, new_due)
 
 
 # Smoothing methods, in the order of the dialog's list: a regular staircase
-# (`smooth`), only the gaps (`fill_gaps`), a custom curve (`follow_curve`).
-METHODS = ("auto", "gaps", "custom")
+# (`smooth`), a custom curve (`follow_curve`). A deck saved with a removed
+# method ("gaps", removed 2026-11-16) opens with the first one.
+METHODS = ("auto", "custom")
 
 
 def default_settings(before: List[int]) -> CurveSettings:

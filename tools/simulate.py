@@ -24,7 +24,6 @@ from review_smoother.smoothing import (  # noqa: E402
     CurveSettings,
     custom_curve,
     daily_counts,
-    fill_gaps,
     follow_curve,
     outside_end,
     move_stats,
@@ -100,7 +99,6 @@ def simulate(
     horizon: int,
     today: int,
     allow_postpone: bool,
-    gaps_only: bool = False,
     settings: Optional[CurveSettings] = None,
     ceiling: float = MOVE_CEILING,
 ) -> None:
@@ -111,8 +109,6 @@ def simulate(
         curve = custom_curve(settings, outside_end(horizon))
         target, new_due = follow_curve(cards, horizon, curve, taken, ceiling)
         curve = curve[:horizon]
-    elif gaps_only:
-        target, new_due = fill_gaps(cards, horizon, taken, ceiling)
     else:
         target, new_due = smooth(cards, horizon, allow_postpone, taken, ceiling)
 
@@ -155,9 +151,6 @@ def main() -> None:
         "--postpone", action="store_true", help="allow postponing a few cards"
     )
     parser.add_argument(
-        "--fill-gaps", action="store_true", help="only fill the gaps, keep the shape"
-    )
-    parser.add_argument(
         "--curve",
         help="follow a custom curve: tomorrow,drop2,drop3,floor,strength,slope_x10000"
         " (e.g. 55,4,3,13,19.01,194)",
@@ -174,7 +167,7 @@ def main() -> None:
     today = today_day_number(args.horizon)
     for deck in args.decks:
         simulate(
-            deck, args.horizon, today, args.postpone, args.fill_gaps, settings,
+            deck, args.horizon, today, args.postpone, settings,
             args.ceiling / 100,
         )
 

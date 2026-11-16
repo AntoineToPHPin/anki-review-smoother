@@ -2,7 +2,6 @@
 
 **method** (default `"auto"`): smoothing method for a deck that has none saved in `decks`:
 - `"auto"`: reshape the curve into a regular staircase;
-- `"gaps"`: keep the current shape and only fill its gaps (for example 2, 2, 2, 1, 1… 1, 0, 3 becomes 2, 2, 2, 2, 1… 1, 1, 1);
 - `"custom"`: follow a custom curve (see `decks`), postponing cards where it wants fewer than are due.
 
 **allow_postpone** (default `false`): initial state of the "Postpone a few cards" checkbox, shown for the `"auto"` method. Cards are normally only advanced; when this is on, a few cards (at most 1% of the deck's cards in the window, at least one) may be pushed back by up to 10% of their interval, only to lower the peak at the start of the curve.
