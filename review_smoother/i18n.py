@@ -93,6 +93,37 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "target_curve": "Target curve",
         "vs_before": "{diff} compared with before",
         "colon": ":",
+        "reposition_menu": "Reposition new cards…",
+        "reposition_button": "Reposition",
+        "reposition_title": "Reposition new cards",
+        "reposition_start": "Start position:",
+        "reposition_step": "Step:",
+        "reposition_shuffle": "Shuffle the cards (card by card, not note by note)",
+        "reposition_reshuffle": "Shuffle again",
+        "reposition_spacing_one": (
+            "Sibling cards are kept at least {count} position apart, so that they are "
+            "not introduced on the same day ({count} new card a day)."
+        ),
+        "reposition_spacing_other": (
+            "Sibling cards are kept at least {count} positions apart, so that they are "
+            "not introduced on the same day ({count} new cards a day)."
+        ),
+        "reposition_new": "New position",
+        "reposition_current": "Current position",
+        "reposition_card": "Card",
+        "reposition_none": "No new card in this deck.",
+        "reposition_in_place_one": "{count} new card, already in place.",
+        "reposition_in_place_other": "{count} new cards, already in place.",
+        "reposition_will_change_one": "{count} of {total} new cards will change position.",
+        "reposition_will_change_other": "{count} of {total} new cards will change position.",
+        "reposition_close_siblings_one": (
+            "Some sibling cards could not be kept apart: they follow each other."
+        ),
+        "reposition_close_siblings_other": (
+            "Some sibling cards could only be kept {count} positions apart."
+        ),
+        "reposition_applied_one": "{count} card repositioned. Undo with Edit > Undo.",
+        "reposition_applied_other": "{count} cards repositioned. Undo with Edit > Undo.",
     },
     "fr": {
         "deck": f"Paquet{NBSP}:",
@@ -181,6 +212,45 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "target_curve": "Courbe visée",
         "vs_before": "{diff} par rapport à avant",
         "colon": f"{NBSP}:",
+        "reposition_menu": "Repositionner les nouvelles cartes…",
+        "reposition_button": "Repositionner",
+        "reposition_title": "Repositionner les nouvelles cartes",
+        "reposition_start": f"Position de départ{NBSP}:",
+        "reposition_step": f"Pas{NBSP}:",
+        "reposition_shuffle": "Mélanger les cartes (carte par carte, pas note par note)",
+        "reposition_reshuffle": "Mélanger à nouveau",
+        "reposition_spacing_one": (
+            "Les cartes sœurs sont écartées d’au moins {count} position, pour ne pas "
+            "être introduites le même jour ({count} nouvelle carte par jour)."
+        ),
+        "reposition_spacing_other": (
+            "Les cartes sœurs sont écartées d’au moins {count} positions, pour ne pas "
+            "être introduites le même jour ({count} nouvelles cartes par jour)."
+        ),
+        "reposition_new": "Nouvelle position",
+        "reposition_current": "Position actuelle",
+        "reposition_card": "Carte",
+        "reposition_none": "Aucune nouvelle carte dans ce paquet.",
+        "reposition_in_place_one": "{count} nouvelle carte, déjà en place.",
+        "reposition_in_place_other": "{count} nouvelles cartes, déjà en place.",
+        "reposition_will_change_one": (
+            "{count} nouvelle carte sur {total} changera de position."
+        ),
+        "reposition_will_change_other": (
+            "{count} nouvelles cartes sur {total} changeront de position."
+        ),
+        "reposition_close_siblings_one": (
+            f"Certaines cartes sœurs n’ont pas pu être écartées{NBSP}: elles se suivent."
+        ),
+        "reposition_close_siblings_other": (
+            "Certaines cartes sœurs n’ont pu être écartées que de {count} positions."
+        ),
+        "reposition_applied_one": (
+            f"{{count}} carte repositionnée. Pour annuler{NBSP}: Édition > Annuler."
+        ),
+        "reposition_applied_other": (
+            f"{{count}} cartes repositionnées. Pour annuler{NBSP}: Édition > Annuler."
+        ),
     },
 }
 

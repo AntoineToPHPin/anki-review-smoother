@@ -1,9 +1,10 @@
-"""Link to Review Smoother next to the Future Due graph of the Statistics window.
+"""Buttons to Review Smoother next to the Future Due graph of the Statistics
+window: the smoothing dialog and the reposition dialog.
 
 The Statistics window (`aqt.stats.NewDeckStats`) is a web page built by Anki
 after it loads; each graph has an `<h1>` title. A script finds the Future Due
-title (« Charge de travail ») and appends a link to it, again whenever the
-page redraws. A click sends a bridge command, handled here.
+title (« Charge de travail ») and appends the buttons to it, again whenever
+the page redraws. A click sends a bridge command, handled here.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from aqt.stats import NewDeckStats
 from .i18n import Translator
 
 COMMAND = "review_smoother:open"
+REPOSITION_COMMAND = "review_smoother:reposition"
 
 LINK_SCRIPT = """
 (() => {
@@ -41,18 +43,20 @@ LINK_SCRIPT = """
             if (text !== title) {
                 continue;
             }
-            // A plain <button>: the page gives it Anki's button look, in light
-            // and night mode; only its size is set here.
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "review-smoother-link";
-            button.textContent = %(label)s;
-            button.title = %(tip)s;
-            button.style.cssText =
-                "margin-left: 0.75em; padding: 0.15em 0.7em; font-size: 0.55em;"
-                + " font-weight: normal; vertical-align: middle;";
-            button.addEventListener("click", () => pycmd(%(command)s));
-            h1.appendChild(button);
+            for (const [label, tip, command] of %(buttons)s) {
+                // A plain <button>: the page gives it Anki's button look, in
+                // light and night mode; only its size is set here.
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "review-smoother-link";
+                button.textContent = label;
+                button.title = tip;
+                button.style.cssText =
+                    "margin-left: 0.75em; padding: 0.15em 0.7em; font-size: 0.55em;"
+                    + " font-weight: normal; vertical-align: middle;";
+                button.addEventListener("click", () => pycmd(command));
+                h1.appendChild(button);
+            }
         }
     };
     addLink();
@@ -71,9 +75,12 @@ def link_script() -> str:
     tr = Translator(anki.lang.current_lang)
     return LINK_SCRIPT % {
         "title": json.dumps(mw.col.tr.statistics_future_due_title()),
-        "label": json.dumps("Review Smoother"),
-        "tip": json.dumps(tr("stats_link_tip")),
-        "command": json.dumps(COMMAND),
+        "buttons": json.dumps(
+            [
+                ["Review Smoother", tr("stats_link_tip"), COMMAND],
+                [tr("reposition_button"), tr("reposition_title"), REPOSITION_COMMAND],
+            ]
+        ),
     }
 
 
@@ -85,11 +92,16 @@ def on_stats_dialog(dialog: NewDeckStats) -> None:
 
 
 def on_js_message(handled: Tuple[bool, Any], message: str, context: Any) -> Tuple[bool, Any]:
-    if message != COMMAND or not isinstance(context, NewDeckStats):
+    if message not in (COMMAND, REPOSITION_COMMAND) or not isinstance(context, NewDeckStats):
         return handled
+    deck = stats_deck_name(context)
+    if message == REPOSITION_COMMAND:
+        from .reposition_ui import open_reposition_dialog
+
+        QTimer.singleShot(0, lambda: open_reposition_dialog(deck))
+        return (True, None)
     from .ui import open_dialog
 
-    deck = stats_deck_name(context)
 
     def reload_stats() -> None:
         try:

@@ -3,5 +3,6 @@
     "method": "auto",
     "allow_postpone": false,
     "move_ceiling_percent": 5,
-    "decks": {}
+    "decks": {},
+    "reposition": {}
 }

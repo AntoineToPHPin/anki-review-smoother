@@ -11,8 +11,10 @@ except ImportError:  # outside Anki (tests, tools)
     mw = None
 
 if mw is not None:
+    from .reposition_ui import setup_reposition_menu
     from .stats_link import setup_stats_link
     from .ui import setup_menu
 
     setup_menu()
+    setup_reposition_menu()
     setup_stats_link()
