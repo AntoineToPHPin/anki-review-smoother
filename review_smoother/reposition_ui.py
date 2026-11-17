@@ -25,16 +25,30 @@ from aqt.qt import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QTimer,
     QVBoxLayout,
+    QWidget,
     Qt,
     qconnect,
 )
 from aqt.utils import restoreGeom, saveGeom, tooltip
 
 from .i18n import Translator
-from .reposition import NewCard, current_order, positions, sibling_gap, shuffled
+from .reposition import (
+    NewCard,
+    block_positions,
+    current_order,
+    positions,
+    sibling_gap,
+    shuffled,
+)
 
 GEOMETRY_KEY = "reviewSmootherReposition"
+# "sequential": from a start, with a step, possibly shuffled; "blocks": each
+# block of positions moved up to its start (asked 2026-11-17).
+MODES = ("sequential", "blocks")
+# Pause in typing after which a changed setting is applied.
+SETTINGS_DELAY_MS = 250
 # Longest card text shown in the preview.
 TEXT_LENGTH = 80
 
@@ -102,6 +116,11 @@ class RepositionDialog(QDialog):
         current = deck or mw.col.decks.current()["name"]
         if self.deck.findText(current) >= 0:
             self.deck.setCurrentText(current)
+        self.mode = QComboBox()
+        for mode in MODES:
+            self.mode.addItem(tr(f"reposition_{mode}"), mode)
+
+        # "sequential": from a start, with a step, possibly shuffled.
         self.start = QSpinBox()
         self.start.setRange(0, 10_000_000)
         self.step = QSpinBox()
@@ -115,13 +134,34 @@ class RepositionDialog(QDialog):
         self.spacing_hint = QLabel()
         self.spacing_hint.setWordWrap(True)
         self.spacing_hint.setEnabled(False)
+        self.sequential_panel = QWidget()
+        sequential_form = QFormLayout(self.sequential_panel)
+        sequential_form.setContentsMargins(0, 0, 0, 0)
+        sequential_form.addRow(tr("reposition_start"), self.start)
+        sequential_form.addRow(tr("reposition_step"), self.step)
+        sequential_form.addRow(shuffle_row)
+        sequential_form.addRow(self.spacing_hint)
+
+        # "blocks": each block moved up to its start.
+        self.block_size = QSpinBox()
+        self.block_size.setRange(2, 100_000)
+        self.first_block = QSpinBox()
+        self.first_block.setRange(1, 10_000_000)
+        self.blocks_hint = QLabel()
+        self.blocks_hint.setWordWrap(True)
+        self.blocks_hint.setEnabled(False)
+        self.blocks_panel = QWidget()
+        blocks_form = QFormLayout(self.blocks_panel)
+        blocks_form.setContentsMargins(0, 0, 0, 0)
+        blocks_form.addRow(tr("reposition_block_size"), self.block_size)
+        blocks_form.addRow(tr("reposition_first_block"), self.first_block)
+        blocks_form.addRow(self.blocks_hint)
 
         form = QFormLayout()
         form.addRow(tr("deck"), self.deck)
-        form.addRow(tr("reposition_start"), self.start)
-        form.addRow(tr("reposition_step"), self.step)
-        form.addRow(shuffle_row)
-        form.addRow(self.spacing_hint)
+        form.addRow(tr("reposition_mode"), self.mode)
+        form.addRow(self.sequential_panel)
+        form.addRow(self.blocks_panel)
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(
@@ -130,9 +170,10 @@ class RepositionDialog(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        # Fitted to their contents once filled (see `refresh`): in
+        # ResizeToContents mode, every item set measures the whole column
+        # again, which made each change slow on hundreds of cards.
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
@@ -151,16 +192,24 @@ class RepositionDialog(QDialog):
         layout.addWidget(self.summary)
         layout.addWidget(self.buttons)
 
+        self.pending = QTimer(self)
+        self.pending.setSingleShot(True)
+        self.pending.setInterval(SETTINGS_DELAY_MS)
+        qconnect(self.pending.timeout, self.apply_settings)
+
         self.load_deck()
         qconnect(self.deck.currentTextChanged, lambda _: self.load_deck())
-        qconnect(self.start.valueChanged, lambda _: self.on_settings_changed())
-        qconnect(self.step.valueChanged, lambda _: self.on_settings_changed())
+        # The order is drawn again: blocks keep the current one.
+        qconnect(self.mode.currentIndexChanged, lambda _: self.on_shuffle_changed())
+        for spin_box in (self.start, self.step, self.block_size, self.first_block):
+            qconnect(spin_box.valueChanged, lambda _: self.on_settings_changed())
         qconnect(self.shuffle.toggled, lambda _: self.on_shuffle_changed())
         qconnect(self.reshuffle.clicked, lambda: self.on_shuffle_changed(save=False))
         restoreGeom(self, GEOMETRY_KEY, default_size=(800, 600))
 
     # Settings per deck, in the add-on's config: {"reposition": {name:
-    # {"start": 1, "step": 1, "shuffle": false}}}.
+    # {"mode": "sequential", "start": 1, "step": 1, "shuffle": false,
+    # "block_size": 100, "first_block": 11}}}.
 
     def saved(self) -> Dict[str, object]:
         config = mw.addonManager.getConfig(__name__) or {}
@@ -170,9 +219,12 @@ class RepositionDialog(QDialog):
         config = mw.addonManager.getConfig(__name__) or {}
         decks = dict(config.get("reposition", {}))
         decks[self.deck.currentText()] = {
+            "mode": self.mode.currentData(),
             "start": self.start.value(),
             "step": self.step.value(),
             "shuffle": self.shuffle.isChecked(),
+            "block_size": self.block_size.value(),
+            "first_block": self.first_block.value(),
         }
         config["reposition"] = decks
         mw.addonManager.writeConfig(__name__, config)
@@ -180,12 +232,18 @@ class RepositionDialog(QDialog):
     def load_deck(self) -> None:
         deck = self.deck.currentText()
         saved = self.saved()
-        for widget in (self.start, self.step, self.shuffle):
+        widgets = (
+            self.mode, self.start, self.step, self.shuffle, self.block_size, self.first_block
+        )
+        for widget in widgets:
             widget.blockSignals(True)
+        self.mode.setCurrentIndex(max(0, self.mode.findData(saved.get("mode", MODES[0]))))
         self.start.setValue(int(saved.get("start", 1)))  # type: ignore[arg-type]
         self.step.setValue(int(saved.get("step", 1)))  # type: ignore[arg-type]
         self.shuffle.setChecked(bool(saved.get("shuffle", False)))
-        for widget in (self.start, self.step, self.shuffle):
+        self.block_size.setValue(int(saved.get("block_size", 100)))  # type: ignore[arg-type]
+        self.first_block.setValue(int(saved.get("first_block", 11)))  # type: ignore[arg-type]
+        for widget in widgets:
             widget.blockSignals(False)
         self.cards = new_cards(mw.col, deck)
         self.texts = card_texts(mw.col, self.cards) if self.cards else {}
@@ -194,6 +252,11 @@ class RepositionDialog(QDialog):
         self.refresh()
 
     def on_settings_changed(self) -> None:
+        # Once typing pauses: typing 100 would otherwise refresh for 1, 10
+        # and 100.
+        self.pending.start()
+
+    def apply_settings(self) -> None:
         self.save()
         self.refresh()
 
@@ -211,18 +274,43 @@ class RepositionDialog(QDialog):
         else:
             self.order = current_order(self.cards)
 
+    def by_blocks(self) -> bool:
+        return self.mode.currentData() == "blocks"
+
     def new_positions(self) -> Dict[int, int]:
+        if self.by_blocks():
+            return block_positions(
+                self.cards, self.block_size.value(), self.first_block.value()
+            )
         return positions(self.order, self.start.value(), self.step.value())
 
     def refresh(self) -> None:
         tr = self.tr
-        shuffle = self.shuffle.isChecked()
+        blocks = self.by_blocks()
+        self.sequential_panel.setVisible(not blocks)
+        self.blocks_panel.setVisible(blocks)
+        size, first = self.block_size.value(), self.first_block.value()
+        first_end = ((first - 1) // size + 1) * size
+        self.blocks_hint.setText(
+            tr(
+                "reposition_blocks_hint",
+                first=first,
+                first_end=first_end,
+                next=first_end + 1,
+                next_end=first_end + size,
+            )
+        )
+        if blocks:
+            # Blocks keep the current order.
+            self.order = current_order(self.cards)
+        shuffle = self.shuffle.isChecked() and not blocks
         self.reshuffle.setVisible(shuffle)
         has_siblings = len({c.note for c in self.cards}) < len(self.cards)
         self.spacing_hint.setVisible(shuffle and has_siblings and self.spacing > 1)
         self.spacing_hint.setText(tr("reposition_spacing", count=self.spacing))
 
         new_position = self.new_positions()
+        self.table.setUpdatesEnabled(False)
         self.table.setRowCount(len(self.order))
         for row, card in enumerate(self.order):
             values = (new_position[card.id], card.position, self.texts.get(card.id, ""))
@@ -233,6 +321,9 @@ class RepositionDialog(QDialog):
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self.table.setItem(row, column, item)
+        self.table.resizeColumnToContents(0)
+        self.table.resizeColumnToContents(1)
+        self.table.setUpdatesEnabled(True)
 
         changed = sum(1 for c in self.cards if new_position[c.id] != c.position)
         if not self.cards:
@@ -269,6 +360,10 @@ class RepositionDialog(QDialog):
         self.accept()
 
     def done(self, result: int) -> None:
+        # A setting changed just before closing is still remembered.
+        if self.pending.isActive():
+            self.pending.stop()
+            self.save()
         saveGeom(self, GEOMETRY_KEY)
         super().done(result)
 

@@ -116,3 +116,47 @@ def positions(
     """New position of every card: `start`, `start + step`... in `order`,
     one per card (siblings included)."""
     return {card.id: start + index * step for index, card in enumerate(order)}
+
+
+def block_start(position: int, size: int, first: int) -> int:
+    """Start of the block holding `position`: blocks of `size` positions
+    (1–100, 101–200...), the first one starting at `first` (11–100)."""
+    return max((position - 1) // size * size + 1, first)
+
+
+def block_positions(cards: Sequence[NewCard], size: int = 100, first: int = 11) -> Dict[int, int]:
+    """New position of every card when each block is moved up to its start:
+    a block whose cards start at 103 starts at 101 again, in the same order,
+    one position per card. Cards before `first` (put there to be learned
+    next) are left alone.
+
+    A group longer than a block goes on into the next ones: when the cards
+    of a block reach its last position and the next block's cards follow
+    without a gap (100, 101), they are one group, moved up as a whole from
+    the start of its first block. Otherwise blocks never exchange cards (a
+    group only moves earlier, within the positions it spans), so groups
+    never mix. Only ambiguity: a group that exactly fills its block (90
+    cards from 11, 100 from 101) followed right away by the next one.
+
+    `Musique::Paroles de chansons` (asked 2026-11-17): one song per block of
+    100, the first from 11; the songs learned so far leave their first
+    positions empty every day; songs of more than 100 cards are common, in
+    any block."""
+    groups: List[List[NewCard]] = []
+    result: Dict[int, int] = {}
+    for card in current_order(cards):
+        if card.position < first:
+            result[card.id] = card.position
+            continue
+        if groups:
+            last = groups[-1][-1]
+            same_block = block_start(card.position, size, first) == block_start(
+                last.position, size, first
+            )
+            if same_block or card.position <= last.position + 1:
+                groups[-1].append(card)
+                continue
+        groups.append([card])
+    for group in groups:
+        result.update(positions(group, block_start(group[0].position, size, first)))
+    return result

@@ -96,6 +96,17 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "reposition_menu": "Reposition new cards…",
         "reposition_button": "Reposition",
         "reposition_title": "Reposition new cards",
+        "reposition_mode": "Mode:",
+        "reposition_sequential": "In a row",
+        "reposition_blocks": "By blocks",
+        "reposition_block_size": "Block size:",
+        "reposition_first_block": "First block from:",
+        "reposition_blocks_hint": (
+            "The cards of each block (positions {first}–{first_end}, then {next}–{next_end}…) "
+            "move up to the start of their block, in the same order. Cards that run on into "
+            "the next block without a gap move up with it, as a whole. Cards placed before "
+            "{first} stay where they are."
+        ),
         "reposition_start": "Start position:",
         "reposition_step": "Step:",
         "reposition_shuffle": "Shuffle the cards (card by card, not note by note)",
@@ -215,6 +226,17 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "reposition_menu": "Repositionner les nouvelles cartes…",
         "reposition_button": "Repositionner",
         "reposition_title": "Repositionner les nouvelles cartes",
+        "reposition_mode": f"Mode{NBSP}:",
+        "reposition_sequential": "À la suite",
+        "reposition_blocks": "Par blocs",
+        "reposition_block_size": f"Taille des blocs{NBSP}:",
+        "reposition_first_block": f"Premier bloc à partir de{NBSP}:",
+        "reposition_blocks_hint": (
+            "Les cartes de chaque bloc (positions {first} à {first_end}, puis {next} à "
+            "{next_end}…) remontent au début de leur bloc, dans le même ordre. Les cartes "
+            "qui débordent sur le bloc suivant sans trou remontent avec lui, d’un seul tenant. "
+            "Les cartes placées avant {first} ne bougent pas."
+        ),
         "reposition_start": f"Position de départ{NBSP}:",
         "reposition_step": f"Pas{NBSP}:",
         "reposition_shuffle": "Mélanger les cartes (carte par carte, pas note par note)",

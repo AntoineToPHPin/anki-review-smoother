@@ -4,6 +4,8 @@ import unittest
 
 from review_smoother.reposition import (
     NewCard,
+    block_positions,
+    block_start,
     current_order,
     positions,
     sibling_gap,
@@ -39,6 +41,71 @@ class SequentialTest(unittest.TestCase):
             NewCard(id=3, note=2, ord=0, position=6),
         ]
         self.assertEqual(positions(current_order(cards)), {2: 1, 1: 2, 3: 3})
+
+
+class BlockTest(unittest.TestCase):
+    def test_block_starts(self):
+        self.assertEqual(block_start(11, 100, 11), 11)
+        self.assertEqual(block_start(100, 100, 11), 11)
+        self.assertEqual(block_start(101, 100, 11), 101)
+        self.assertEqual(block_start(259, 100, 11), 201)
+        self.assertEqual(block_start(1122, 100, 11), 1101)
+
+    def test_each_block_moves_up_to_its_start(self):
+        # Paroles de chansons: songs at 14..16, 103..104, 201..202 and two
+        # cards put at 1 and 2 to be learned next.
+        cards = [
+            NewCard(id=1, note=1, ord=0, position=14),
+            NewCard(id=2, note=2, ord=0, position=15),
+            NewCard(id=3, note=3, ord=0, position=16),
+            NewCard(id=4, note=4, ord=0, position=104),
+            NewCard(id=5, note=5, ord=0, position=103),
+            NewCard(id=6, note=6, ord=0, position=201),
+            NewCard(id=7, note=7, ord=0, position=202),
+            NewCard(id=8, note=8, ord=0, position=1),
+            NewCard(id=9, note=9, ord=0, position=2),
+        ]
+        self.assertEqual(
+            block_positions(cards, 100, 11),
+            {1: 11, 2: 12, 3: 13, 5: 101, 4: 102, 6: 201, 7: 202, 8: 1, 9: 2},
+        )
+
+    def test_a_song_longer_than_a_block_moves_as_a_whole(self):
+        # Rap God: 122 cards from 1001; 5 learned, 117 left from 1006.
+        cards = [NewCard(id=p, note=p, ord=0, position=p) for p in range(1006, 1123)]
+        new = block_positions(cards, 100, 11)
+        self.assertEqual([new[c.id] for c in cards], list(range(1001, 1118)))
+
+    def test_a_long_song_among_the_first_blocks(self):
+        # 150 cards from 101 (3 learned: 104..250), the next song at 301,
+        # a song of 17 at 14 before it: nothing mixes.
+        first = [NewCard(id=p, note=p, ord=0, position=p) for p in range(14, 31)]
+        long = [NewCard(id=p, note=p, ord=0, position=p) for p in range(104, 251)]
+        after = [NewCard(id=p, note=p, ord=0, position=p) for p in range(303, 330)]
+        new = block_positions(first + long + after, 100, 11)
+        self.assertEqual([new[c.id] for c in first], list(range(11, 28)))
+        self.assertEqual([new[c.id] for c in long], list(range(101, 248)))
+        self.assertEqual([new[c.id] for c in after], list(range(301, 328)))
+
+    def test_a_long_song_from_the_first_block(self):
+        # 120 cards from 11 spill to 130; learned 2: 13..130.
+        cards = [NewCard(id=p, note=p, ord=0, position=p) for p in range(13, 131)]
+        new = block_positions(cards, 100, 11)
+        self.assertEqual([new[c.id] for c in cards], list(range(11, 129)))
+
+    def test_a_gap_at_the_block_end_starts_a_new_song(self):
+        cards = [
+            NewCard(id=1, note=1, ord=0, position=198),
+            NewCard(id=2, note=2, ord=0, position=203),
+        ]
+        self.assertEqual(block_positions(cards, 100, 11), {1: 101, 2: 201})
+
+    def test_siblings_on_one_position_get_their_own(self):
+        cards = [
+            NewCard(id=1, note=1, ord=0, position=105),
+            NewCard(id=2, note=1, ord=1, position=105),
+        ]
+        self.assertEqual(block_positions(cards, 100, 11), {1: 101, 2: 102})
 
 
 class ShuffleTest(unittest.TestCase):
