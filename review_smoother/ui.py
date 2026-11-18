@@ -37,6 +37,7 @@ from aqt.utils import restoreGeom, saveGeom, tooltip
 from aqt.webview import AnkiWebView
 
 from .i18n import Translator
+from .tracking_ui import open_tracking_dialog
 from .smoothing import (
     MOVE_CEILING,
     POSTPONE_MARGIN,
@@ -345,6 +346,11 @@ class SmoothDialog(QDialog):
             tr("show_moved"), QDialogButtonBox.ButtonRole.ActionRole
         )
         qconnect(self.show_moved.clicked, self.browse_moved)
+        # The day's tracking (custom curve only), in the deck's tracking note.
+        self.record_tracking = self.buttons.addButton(
+            tr("tracking_button"), QDialogButtonBox.ButtonRole.ActionRole
+        )
+        qconnect(self.record_tracking.clicked, self.open_tracking)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -429,6 +435,10 @@ class SmoothDialog(QDialog):
         # postpones whatever it needs to.
         self.postpone.setVisible(method == "auto")
         self.curve_box.setVisible(method == "custom")
+        self.record_tracking.setEnabled(method == "custom")
+        self.record_tracking.setToolTip(
+            self.tr("tracking_button_tip" if method == "custom" else "tracking_button_disabled")
+        )
         # Unfolded each time the custom method is chosen (or opened with).
         if method == "custom" and self.shown_method != "custom":
             self.curve_toggle.setChecked(True)
@@ -517,6 +527,9 @@ class SmoothDialog(QDialog):
         if short:
             sentences.append(tr("curve_short", count=short))
         return " ".join(sentences)
+
+    def open_tracking(self) -> None:
+        open_tracking_dialog(self, self.deck.currentText(), self.curve_settings())
 
     def browse_moved(self) -> None:
         """Open Anki's Browser on the cards that applying would move."""

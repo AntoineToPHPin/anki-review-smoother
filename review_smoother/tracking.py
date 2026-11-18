@@ -24,7 +24,7 @@ import html
 import json
 import os
 import re
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 FORMAT_VERSION = 1
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -117,3 +117,173 @@ def dated_rows(values: Sequence[Sequence[Any]], last_day) -> List[List[Any]]:
         [(last_day - timedelta(days=count - 1 - i)).isoformat()] + list(row)
         for i, row in enumerate(values)
     ]
+
+
+# Recording a day (asked 2026-11-18: a button in the Review Smoother dialog,
+# values prefilled and editable, plus a remark; not automatic).
+#
+# Values the add-on computes, by key. A table's columns are matched to keys
+# by their label (any language, spaces and case ignored; `i18n` keys
+# `tracking_col_<key>`, whose French labels are the author's spreadsheet
+# headers, plus ALIASES), so the imported sheets need no extra data.
+COLUMN_KEYS = (
+    "tomorrow",
+    "drop_day2",
+    "drop_day3",
+    "floor",
+    "strength",
+    "slope_x10000",
+    "slope",
+    "new_cards",
+    "learned",
+    "curve_31",
+    "curve_90",
+    "curve_365",
+    "curve_day90",
+    "curve_day365",
+    "curve_after_90",
+    "remark",
+)
+# The spreadsheet's « Coefficient b » is the curve's floor.
+ALIASES = {"floor": ("Coefficient b",)}
+# Columns of the table of a deck tracked for the first time.
+DEFAULT_COLUMNS = (
+    "tomorrow",
+    "drop_day2",
+    "drop_day3",
+    "floor",
+    "strength",
+    "slope_x10000",
+    "new_cards",
+    "learned",
+    "curve_31",
+    "curve_90",
+    "curve_365",
+    "remark",
+)
+
+
+def _normal(label: str) -> str:
+    return "".join(label.split()).casefold()
+
+
+def known_labels() -> Dict[str, str]:
+    """Normalised label -> key, every language."""
+    from .i18n import STRINGS
+
+    labels: Dict[str, str] = {}
+    for key in COLUMN_KEYS:
+        names = [strings[f"tracking_col_{key}"] for strings in STRINGS.values()]
+        for name in names + list(ALIASES.get(key, ())):
+            labels[_normal(name)] = key
+    return labels
+
+
+def column_keys(columns: Sequence[str]) -> List[Optional[str]]:
+    labels = known_labels()
+    return [labels.get(_normal(c)) for c in columns]
+
+
+def new_history(tr) -> Dict[str, Any]:
+    columns = [tr(f"tracking_col_{key}") for key in DEFAULT_COLUMNS]
+    return history([table(tr("tracking_default_table"), columns, [])])
+
+
+def day_values(settings, new_cards: int, learned: int) -> Dict[str, Any]:
+    """What the add-on knows of the day: the custom curve's settings and
+    totals (as the spreadsheet computed them: a month = 31 days; « after day
+    90 » = days 90 to 364) and the deck's cards."""
+    from .smoothing import custom_curve
+
+    curve = custom_curve(settings, 365)
+    return {
+        "tomorrow": settings.tomorrow,
+        "drop_day2": settings.drop_day2,
+        "drop_day3": settings.drop_day3,
+        "floor": settings.floor,
+        "strength": number(settings.strength),
+        "slope_x10000": number(round(settings.slope * 10000, 4)),
+        "slope": number(round(settings.slope, 8)),
+        "new_cards": new_cards,
+        "learned": learned,
+        "curve_31": sum(curve[:31]),
+        "curve_90": sum(curve[:90]),
+        "curve_365": sum(curve),
+        "curve_day90": curve[89],
+        "curve_day365": curve[364],
+        "curve_after_90": sum(curve[89:364]),
+    }
+
+
+def find_row(t: Mapping[str, Any], day: str) -> Optional[List[Any]]:
+    return next((r for r in t["rows"] if r and r[0] == day), None)
+
+
+def form_fields(
+    data: Mapping[str, Any], day: str, computed: Mapping[str, Any]
+) -> List[Tuple[Any, str, Any]]:
+    """Fields of the recording form, as (id, label, value): one per key,
+    labelled as its first column (shared by the tables that have it), then
+    one per column the add-on does not know, id (table, column) labelled
+    "column (table)". Values: computed, else what the day's row already
+    holds (remark, unknown columns)."""
+    fields: List[Tuple[Any, str, Any]] = []
+    seen = set()
+    unknown = []
+    for t_index, t in enumerate(data["tables"]):
+        row = find_row(t, day)
+        for c_index, (column, key) in enumerate(zip(t["columns"], column_keys(t["columns"]))):
+            existing = row[c_index + 1] if row and c_index + 1 < len(row) else None
+            if key is None:
+                unknown.append(((t_index, c_index), f"{column} ({t['title']})", existing))
+            elif key not in seen:
+                seen.add(key)
+                fields.append((key, column, computed.get(key, existing)))
+    if "remark" not in seen:
+        fields.append(("remark", None, None))  # labelled by the dialog
+    return fields + unknown
+
+
+def record(data: Mapping[str, Any], day: str, values: Mapping[Any, Any], remark_label: str) -> Dict[str, Any]:
+    """The history with the day's row of every table set from `values`
+    (form field id -> value), replacing that day's row if any. A remark goes
+    into the tables with a remark column; with none, the first table gets
+    one (titled `remark_label`)."""
+    tables = json.loads(json.dumps(data["tables"]))
+    remark = values.get("remark")
+    if remark and tables and not any("remark" in column_keys(t["columns"]) for t in tables):
+        tables[0]["columns"].append(remark_label)
+        for row in tables[0]["rows"]:
+            row.append(None)
+    for t_index, t in enumerate(tables):
+        keys = column_keys(t["columns"])
+        row = [day] + [
+            values.get(key if key is not None else (t_index, c_index))
+            for c_index, key in enumerate(keys)
+        ]
+        rows = [r for r in t["rows"] if r[0] != day]
+        rows.append(row)
+        rows.sort(key=lambda r: r[0])
+        t["rows"] = rows
+    return {"v": FORMAT_VERSION, "tables": tables}
+
+
+def parse_value(text: str) -> Any:
+    """A form field's text: a number (decimal comma or point), None when
+    empty, else the text as typed ("?")."""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return number(float(text.replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace(",", ".")))
+    except ValueError:
+        return text
+
+
+def show_value(value: Any, decimal_comma: bool) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        text = repr(value)
+        return text.replace(".", ",") if decimal_comma else text
+    return str(value)

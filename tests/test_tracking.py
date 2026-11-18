@@ -43,3 +43,85 @@ class TemplateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordTest(unittest.TestCase):
+    """The author's two sheets (2026-11-18), recorded from the add-on."""
+
+    def setUp(self):
+        from review_smoother.smoothing import CurveSettings
+
+        self.data = tracking.history([
+            tracking.table(
+                "Suivi 90 j.",
+                ["Nombre révision lendemain", "Écart entre le jour 1 et le jour 2",
+                 "Écart entre le jour 2 et le jour 3", "Nombre révisions à long terme",
+                 "Force de la mémoire", "Nouvelles cartes apprises", "Total à un mois",
+                 "Total à trois mois", "Total à un an", "Total paquet", "Remarque"],
+                [["2026-11-17", 55, 4, 3, 13, 19.01, 9, 1002, 1880, 4721, 12945, None]],
+            ),
+            tracking.table(
+                "Suivi 365 j.",
+                ["Total à un an", "Total à trois mois", "Quantité à 90 jours",
+                 "Quantité à 365 jours", "Quantité total à un an",
+                 "Coefficient a × 10\u202f000", "Coefficient a", "Coefficient b"],
+                [["2026-11-17", 4721, 1880, 13, 8, 2846, 194, 0.0194, 13]],
+            ),
+        ])
+        self.computed = tracking.day_values(CurveSettings(55, 4, 3, 13, 19.01, 0.0194), 2, 12947)
+
+    def test_every_column_is_known(self):
+        for t in self.data["tables"]:
+            self.assertNotIn(None, tracking.column_keys(t["columns"]))
+
+    def test_the_spreadsheet_values(self):
+        values = dict((k, v) for k, _, v in tracking.form_fields(self.data, "2026-11-18", self.computed))
+        new = tracking.record(self.data, "2026-11-18", values, "Remarque")
+        self.assertEqual(new["tables"][0]["rows"][-1],
+                         ["2026-11-18", 55, 4, 3, 13, 19.01, 2, 1002, 1880, 4721, 12947, None])
+        self.assertEqual(new["tables"][1]["rows"][-1],
+                         ["2026-11-18", 4721, 1880, 13, 8, 2846, 194, 0.0194, 13])
+
+    def test_one_field_per_value(self):
+        fields = tracking.form_fields(self.data, "2026-11-18", self.computed)
+        ids = [f[0] for f in fields]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids.count("curve_365"), 1)
+
+    def test_same_day_replaced_and_remark_kept(self):
+        values = {"remark": "Correction", "learned": 1}
+        once = tracking.record(self.data, "2026-11-17", values, "Remarque")
+        self.assertEqual(len(once["tables"][0]["rows"]), 1)
+        self.assertEqual(once["tables"][0]["rows"][0][-1], "Correction")
+        fields = tracking.form_fields(once, "2026-11-17", {"learned": 3})
+        self.assertIn(("remark", "Remarque", "Correction"), fields)
+
+    def test_rows_stay_in_date_order(self):
+        new = tracking.record(self.data, "2026-11-10", {}, "Remarque")
+        self.assertEqual([r[0] for r in new["tables"][1]["rows"]], ["2026-11-10", "2026-11-17"])
+
+    def test_a_remark_without_remark_column(self):
+        data = tracking.history([tracking.table("T", ["Total paquet"], [["2026-11-17", 1]])])
+        new = tracking.record(data, "2026-11-18", {"learned": 2, "remark": "x"}, "Remarque")
+        self.assertEqual(new["tables"][0]["columns"], ["Total paquet", "Remarque"])
+        self.assertEqual(new["tables"][0]["rows"], [["2026-11-17", 1, None], ["2026-11-18", 2, "x"]])
+
+    def test_unknown_columns_are_asked(self):
+        data = tracking.history([tracking.table("T", ["Humeur"], [["2026-11-18", "bonne"]])])
+        fields = tracking.form_fields(data, "2026-11-18", {})
+        self.assertIn(((0, 0), "Humeur (T)", "bonne"), fields)
+        new = tracking.record(data, "2026-11-18", {(0, 0): "super"}, "Remarque")
+        self.assertEqual(new["tables"][0]["rows"], [["2026-11-18", "super"]])
+
+    def test_typed_values(self):
+        self.assertEqual(tracking.parse_value(" 19,01 "), 19.01)
+        self.assertEqual(tracking.parse_value("12\u202f947"), 12947)
+        self.assertIsNone(tracking.parse_value(""))
+        self.assertEqual(tracking.parse_value("?"), "?")
+        self.assertEqual(tracking.show_value(19.01, True), "19,01")
+        self.assertEqual(tracking.show_value(0.0194, False), "0.0194")
+
+    def test_new_history(self):
+        data = tracking.new_history(Translator("fr"))
+        self.assertEqual(data["tables"][0]["columns"][-1], "Remarque")
+        self.assertNotIn(None, tracking.column_keys(data["tables"][0]["columns"]))
