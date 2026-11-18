@@ -28,6 +28,58 @@
     return;
   }
 
+  // The custom curve (smoothing.custom_curve), its totals over the first
+  // `days` days, from one row's settings; null if one is missing.
+  function curveTotals(set) {
+    var keys = ["tomorrow", "drop_day2", "drop_day3", "floor", "strength", "slope_x10000"];
+    for (var i = 0; i < keys.length; i++) {
+      if (typeof set[keys[i]] !== "number") return null;
+    }
+    var aboveFloor = set.tomorrow - set.drop_day2 - set.drop_day3 - set.floor;
+    var slope = set.slope_x10000 / 10000;
+    var sums = {};
+    var total = 0;
+    for (var day = 1; day <= 365; day++) {
+      var value;
+      if (day === 1) value = set.tomorrow;
+      else if (day === 2) value = set.tomorrow - set.drop_day2;
+      else if (day <= 90) {
+        value = set.floor + Math.floor(aboveFloor * Math.exp(-(day - 3) / Math.max(set.strength, 1e-9)));
+      } else value = Math.floor(set.floor - slope * (day - 90) + 0.5);
+      total += Math.max(0, value);
+      sums[day] = total;
+    }
+    return sums;
+  }
+
+  // Totals computed from the settings, added after a table's own columns
+  // (shown greyed, never stored).
+  function addTotals(t) {
+    var keyOf = [];
+    var found = {};
+    t.columns.forEach(function (name, c) {
+      var key = S.keys[name.replace(/\s+/g, "").toLowerCase()];
+      keyOf[c] = key;
+      if (key) found[key] = true;
+    });
+    if (!found.tomorrow || !found.floor || !found.slope_x10000) return;
+    t.computed = t.columns.length;
+    S.totals.forEach(function (total) {
+      t.columns.push(total[1]);
+    });
+    t.rows.forEach(function (row) {
+      var set = {};
+      keyOf.forEach(function (key, c) {
+        if (key) set[key] = row[c + 1];
+      });
+      var sums = curveTotals(set);
+      S.totals.forEach(function (total) {
+        row.push(sums ? sums[total[0]] : null);
+      });
+    });
+  }
+  tables.forEach(addTotals);
+
   var numberFormat = new Intl.NumberFormat(S.locale, { maximumFractionDigits: 4 });
   var dateFormat = new Intl.DateTimeFormat(S.locale, {
     day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC",
@@ -165,8 +217,8 @@
     var head = el("thead");
     var row = el("tr");
     row.appendChild(el("th", "", S.date));
-    t.columns.forEach(function (name) {
-      row.appendChild(el("th", "", name));
+    t.columns.forEach(function (name, c) {
+      row.appendChild(el("th", c >= t.computed ? "rs-computed" : "", name));
     });
     head.appendChild(row);
     tableNode.appendChild(head);
@@ -177,7 +229,9 @@
       tr.appendChild(el("td", "rs-date", dateFormat.format(time(values[0]))));
       for (var c = 1; c <= t.columns.length; c++) {
         var value = values[c];
-        tr.appendChild(el("td", typeof value === "number" ? "rs-num" : "rs-text", format(value)));
+        var cls = typeof value === "number" ? "rs-num" : "rs-text";
+        if (c - 1 >= t.computed) cls += " rs-computed";
+        tr.appendChild(el("td", cls, format(value)));
       }
       body.appendChild(tr);
     }

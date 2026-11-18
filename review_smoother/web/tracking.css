@@ -189,3 +189,7 @@
 .rs-table tbody tr:nth-child(even) {
   background: var(--stripe);
 }
+.rs-table .rs-computed {
+  color: var(--muted);
+  font-style: italic;
+}

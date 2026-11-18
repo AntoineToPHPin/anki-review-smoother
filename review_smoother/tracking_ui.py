@@ -108,16 +108,6 @@ def save_history(
     return col.merge_undo_entries(undo_start)
 
 
-def day_values(col: Collection, deck: str, settings: CurveSettings) -> Dict[str, Any]:
-    """The values computed for today (see `tracking.day_values`); new cards
-    and learned cards as the author's spreadsheet counted them
-    (`introduced:1`, `-is:new`), subdecks included."""
-    def count(search: str) -> int:
-        return len(col.find_cards(col.build_search_string(SearchNode(deck=deck), search)))
-
-    return tracking.day_values(settings, count("introduced:1"), count("-is:new"))
-
-
 class TrackingDialog(QDialog):
     def __init__(self, parent: QWidget, deck: str, settings: CurveSettings) -> None:
         super().__init__(parent)
@@ -128,7 +118,7 @@ class TrackingDialog(QDialog):
         self.data = tracking.from_field(note.fields[1]) if note else tracking.new_history(tr)
         if not self.data.get("tables"):
             self.data = tracking.new_history(tr)
-        computed = day_values(mw.col, deck, settings)
+        computed = tracking.day_values(settings)
         self.setWindowTitle(tr("tracking_title", deck=deck))
 
         comma = tr.lang == "fr"

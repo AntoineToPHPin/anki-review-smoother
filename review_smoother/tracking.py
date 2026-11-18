@@ -76,6 +76,13 @@ def card_strings(tr) -> Dict[str, Any]:
             [366, tr("tracking_year")],
             [0, tr("tracking_all")],
         ],
+        # Normalised column label -> setting key, to compute the totals.
+        "keys": {label: key for label, key in known_labels().items() if key != "remark"},
+        "totals": [
+            [31, tr("tracking_total_month")],
+            [90, tr("tracking_total_quarter")],
+            [365, tr("tracking_total_year")],
+        ],
         "empty": tr("tracking_empty"),
         "invalid": tr("tracking_invalid"),
     }
@@ -122,10 +129,12 @@ def dated_rows(values: Sequence[Sequence[Any]], last_day) -> List[List[Any]]:
 # Recording a day (asked 2026-11-18: a button in the Review Smoother dialog,
 # values prefilled and editable, plus a remark; not automatic).
 #
-# Values the add-on computes, by key. A table's columns are matched to keys
-# by their label (any language, spaces and case ignored; `i18n` keys
-# `tracking_col_<key>`, whose French labels are the author's spreadsheet
-# headers, plus ALIASES), so the imported sheets need no extra data.
+# The custom curve's settings, by key (asked 2026-11-18: only what is set
+# is kept; totals are computed by the card, new and learned cards are in
+# Anki's own statistics). A table's columns are matched to keys by their
+# label (any language, spaces and case ignored; `i18n` keys
+# `tracking_col_<key>`, the names of the Review Smoother dialog, plus
+# ALIASES: the author's spreadsheet headers and earlier names).
 COLUMN_KEYS = (
     "tomorrow",
     "drop_day2",
@@ -133,34 +142,23 @@ COLUMN_KEYS = (
     "floor",
     "strength",
     "slope_x10000",
-    "slope",
-    "new_cards",
-    "learned",
-    "curve_31",
-    "curve_90",
-    "curve_365",
-    "curve_day90",
-    "curve_day365",
-    "curve_after_90",
     "remark",
 )
-# The spreadsheet's « Coefficient b » is the curve's floor.
-ALIASES = {"floor": ("Coefficient b",)}
+ALIASES = {
+    "tomorrow": ("Nombre révision lendemain", "Reviews tomorrow"),
+    "drop_day2": ("Écart entre le jour 1 et le jour 2",),
+    "drop_day3": ("Écart entre le jour 2 et le jour 3",),
+    "floor": (
+        "Nombre révisions à long terme",
+        "Long-term reviews",
+        "Révisions à long terme",
+        # The spreadsheet's « Coefficient b » is the same setting.
+        "Coefficient b",
+    ),
+    "slope_x10000": ("Coefficient a × 10 000", "Coefficient a × 10,000"),
+}
 # Columns of the table of a deck tracked for the first time.
-DEFAULT_COLUMNS = (
-    "tomorrow",
-    "drop_day2",
-    "drop_day3",
-    "floor",
-    "strength",
-    "slope_x10000",
-    "new_cards",
-    "learned",
-    "curve_31",
-    "curve_90",
-    "curve_365",
-    "remark",
-)
+DEFAULT_COLUMNS = COLUMN_KEYS
 
 
 def _normal(label: str) -> str:
@@ -189,13 +187,8 @@ def new_history(tr) -> Dict[str, Any]:
     return history([table(tr("tracking_default_table"), columns, [])])
 
 
-def day_values(settings, new_cards: int, learned: int) -> Dict[str, Any]:
-    """What the add-on knows of the day: the custom curve's settings and
-    totals (as the spreadsheet computed them: a month = 31 days; « after day
-    90 » = days 90 to 364) and the deck's cards."""
-    from .smoothing import custom_curve
-
-    curve = custom_curve(settings, 365)
+def day_values(settings) -> Dict[str, Any]:
+    """The day's values: the custom curve's settings."""
     return {
         "tomorrow": settings.tomorrow,
         "drop_day2": settings.drop_day2,
@@ -203,15 +196,6 @@ def day_values(settings, new_cards: int, learned: int) -> Dict[str, Any]:
         "floor": settings.floor,
         "strength": number(settings.strength),
         "slope_x10000": number(round(settings.slope * 10000, 4)),
-        "slope": number(round(settings.slope, 8)),
-        "new_cards": new_cards,
-        "learned": learned,
-        "curve_31": sum(curve[:31]),
-        "curve_90": sum(curve[:90]),
-        "curve_365": sum(curve),
-        "curve_day90": curve[89],
-        "curve_day365": curve[364],
-        "curve_after_90": sum(curve[89:364]),
     }
 
 

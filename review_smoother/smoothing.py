@@ -868,8 +868,9 @@ class CurveSettings:
     """A custom curve, as in the author's spreadsheet: day 1 holds `tomorrow`
     cards, day 2 `drop_day2` fewer, day 3 `drop_day3` fewer again; from there
     the curve decays exponentially (Ebbinghaus's forgetting curve,
-    e^(-t/strength)) towards `floor`, the long-term reviews, reached by day
-    90; after day 90 it goes down in a straight line, by `slope` cards a day.
+    e^(-t/strength)) towards `floor`, reached by day 90 (« Cartes à J90 »,
+    was « Révisions à long terme »); after day 90 it goes down in a straight
+    line from there, by `slope` cards a day.
     """
 
     tomorrow: int
