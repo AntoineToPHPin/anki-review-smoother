@@ -1,0 +1,191 @@
+/* Tracking card of Review Smoother (note type CSS). Night mode: Anki puts
+   .nightMode on the body, AnkiDroid .night_mode (and .nightMode lately). */
+.card {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  text-align: left;
+  color: #0b0b0b;
+  background: #fcfcfb;
+  margin: 0;
+}
+.rs-root {
+  --surface: #fcfcfb;
+  --text: #0b0b0b;
+  --muted: #52514e;
+  --line: #2a78d6;
+  --grid: rgba(0, 0, 0, 0.1);
+  --border: rgba(0, 0, 0, 0.15);
+  --stripe: rgba(0, 0, 0, 0.03);
+  --on: rgba(42, 120, 214, 0.14);
+  color: var(--text);
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 12px 16px;
+  box-sizing: border-box;
+}
+.nightMode.card, .night_mode.card, .nightMode .card, .night_mode .card {
+  color: #f0efec;
+  background: #1a1a19;
+}
+.nightMode .rs-root, .night_mode .rs-root {
+  --surface: #1a1a19;
+  --text: #f0efec;
+  --muted: #c3c2b7;
+  --line: #3987e5;
+  --grid: rgba(255, 255, 255, 0.12);
+  --border: rgba(255, 255, 255, 0.2);
+  --stripe: rgba(255, 255, 255, 0.04);
+  --on: rgba(57, 135, 229, 0.25);
+}
+.rs-root button, .rs-root select {
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin: 0;
+}
+.rs-root select {
+  background: var(--surface);
+  max-width: 100%;
+}
+.rs-root button.rs-on {
+  background: var(--on);
+  border-color: var(--line);
+}
+.rs-tabs, .rs-ranges, .rs-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.rs-tabs {
+  margin-bottom: 10px;
+}
+.rs-tabs button {
+  font-weight: 600;
+}
+.rs-controls {
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.rs-label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  color: var(--muted);
+}
+.rs-headline {
+  margin: 12px 0 2px;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.rs-value {
+  font-size: 28px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.rs-when {
+  color: var(--muted);
+}
+.rs-chart {
+  position: relative;
+  width: 100%;
+}
+.rs-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: pan-y;
+}
+.rs-axis text {
+  fill: var(--muted);
+  font-size: 11px;
+}
+.rs-grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+.rs-line {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.rs-dot {
+  fill: var(--line);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+.rs-cross {
+  stroke: var(--muted);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+.rs-hit {
+  fill: transparent;
+}
+.rs-tip {
+  display: none;
+  position: absolute;
+  top: -6px;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+.rs-tip strong {
+  margin-right: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.rs-tip span {
+  color: var(--muted);
+}
+.rs-table {
+  margin-top: 14px;
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.rs-table table {
+  border-collapse: collapse;
+  font-size: 13px;
+  width: 100%;
+}
+.rs-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 600;
+  text-align: right;
+  vertical-align: bottom;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  min-width: 4em;
+}
+.rs-table th:first-child, .rs-table td.rs-date, .rs-table td.rs-text {
+  text-align: left;
+}
+.rs-table td {
+  padding: 3px 8px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.rs-table td.rs-text {
+  white-space: normal;
+  min-width: 14em;
+}
+.rs-table tbody tr:nth-child(even) {
+  background: var(--stripe);
+}
