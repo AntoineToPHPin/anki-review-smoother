@@ -129,6 +129,7 @@
 }
 .rs-hit {
   fill: transparent;
+  cursor: pointer;
 }
 .rs-tip {
   display: none;
@@ -192,4 +193,8 @@
 .rs-table .rs-computed {
   color: var(--muted);
   font-style: italic;
+}
+.rs-table tbody tr.rs-picked {
+  background: var(--on);
+  box-shadow: inset 3px 0 0 var(--line);
 }

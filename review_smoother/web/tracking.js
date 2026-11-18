@@ -226,6 +226,7 @@
     for (var r = t.rows.length - 1; r >= 0; r--) {
       var values = t.rows[r];
       var tr = el("tr");
+      tr.setAttribute("data-date", values[0]);
       tr.appendChild(el("td", "rs-date", dateFormat.format(time(values[0]))));
       for (var c = 1; c <= t.columns.length; c++) {
         var value = values[c];
@@ -383,13 +384,18 @@
     function hide() {
       cross.style.display = mark.style.display = tip.style.display = "none";
     }
-    function move(event) {
+    function nearest(event) {
       var box = graph.getBoundingClientRect();
       var px = ((event.clientX - box.left) / box.width) * width;
       var best = null;
       known.forEach(function (p) {
         if (!best || Math.abs(x(p.t) - px) < Math.abs(x(best.t) - px)) best = p;
       });
+      return best;
+    }
+    function move(event) {
+      var box = graph.getBoundingClientRect();
+      var best = nearest(event);
       var cx = x(best.t);
       cross.setAttribute("x1", cx);
       cross.setAttribute("x2", cx);
@@ -407,7 +413,26 @@
     hit.addEventListener("pointermove", move);
     hit.addEventListener("pointerdown", move);
     hit.addEventListener("pointerleave", hide);
+    // A click (or tap) on a day shows its row in the table.
+    hit.addEventListener("click", function (event) {
+      showRow(new Date(nearest(event).t).toISOString().slice(0, 10));
+    });
     chart.appendChild(graph);
+  }
+
+  // Scroll the table to a day's row, just under its header, and mark the
+  // row; the page only scrolls as much as needed to show the table.
+  function showRow(day) {
+    var row = tableWrap.querySelector('tr[data-date="' + day + '"]');
+    if (!row) return;
+    var picked = tableWrap.querySelector("tr.rs-picked");
+    if (picked) picked.className = "";
+    row.className = "rs-picked";
+    var head = tableWrap.querySelector("thead");
+    var offset = row.getBoundingClientRect().top - tableWrap.getBoundingClientRect().top;
+    var top = tableWrap.scrollTop + offset - (head ? head.offsetHeight : 0);
+    if (tableWrap.scrollIntoView) tableWrap.scrollIntoView({ block: "nearest" });
+    tableWrap.scrollTop = top;
   }
 
   function show() {
