@@ -102,7 +102,7 @@ def save_history(
     col: Collection, deck: str, data: Dict[str, Any], tr: Translator, undo_label: str
 ) -> OpChanges:
     """Write the history into the deck's note (created, card suspended, in
-    the « Review Smoother » deck if missing), as one undo step."""
+    the « _Review Smoother » deck if missing), as one undo step."""
     undo_start = col.add_custom_undo_entry(undo_label)
     model = ensure_model(col, tr)
     note = find_note(col, deck)
