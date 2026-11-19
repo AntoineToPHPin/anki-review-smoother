@@ -263,7 +263,9 @@
       tr.appendChild(el("td", "rs-date", dateFormat.format(time(values[0]))));
       for (var c = 1; c <= t.columns.length; c++) {
         var value = values[c];
-        var cls = typeof value === "number" ? "rs-num" : "rs-text";
+        // Wide, wrapping cells for the remark only: an empty cell styled so
+        // widened its whole column (no slope before 2025-03-08, so no totals).
+        var cls = typeof value === "number" ? "rs-num" : t.keys[c - 1] === "remark" ? "rs-text" : "";
         if (t.computed[c - 1]) cls += " rs-computed";
         tr.appendChild(el("td", cls, format(value)));
       }
