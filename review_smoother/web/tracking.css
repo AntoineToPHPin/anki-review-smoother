@@ -1,22 +1,31 @@
+/* Font of the author's other note types (asked 2026-11-19); offline, Arial. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
+
 /* Tracking card of Review Smoother (note type CSS). Night mode: Anki puts
    .nightMode on the body, AnkiDroid .night_mode (and .nightMode lately). */
+/* Colours of the author's other note types (asked 2026-11-19): background
+   rgb(238, 238, 238) / rgb(44, 44, 44), text black / white, accent grey
+   rgb(140, 140, 140), « baltic blue » rgb(120, 180, 215), table headers
+   rgb(180, 180, 180) / rgb(20, 20, 20). */
 .card {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: Inter, arial, sans-serif;
   font-size: 15px;
   text-align: left;
-  color: #0b0b0b;
-  background: #fcfcfb;
+  color: black;
+  background: rgb(238, 238, 238);
   margin: 0;
 }
 .rs-root {
-  --surface: #fcfcfb;
-  --text: #0b0b0b;
-  --muted: #52514e;
-  --line: #2a78d6;
+  --surface: rgb(238, 238, 238);
+  --text: black;
+  --muted: rgb(90, 90, 90);
+  --accent: rgb(140, 140, 140);
+  --line: rgb(120, 180, 215);
+  --head: rgb(180, 180, 180);
   --grid: rgba(0, 0, 0, 0.1);
-  --border: rgba(0, 0, 0, 0.15);
-  --stripe: rgba(0, 0, 0, 0.03);
-  --on: rgba(42, 120, 214, 0.14);
+  --border: rgb(44, 44, 44);
+  --stripe: rgba(0, 0, 0, 0.04);
+  --on: rgba(120, 180, 215, 0.3);
   color: var(--text);
   max-width: 1100px;
   margin: 0 auto;
@@ -24,18 +33,20 @@
   box-sizing: border-box;
 }
 .nightMode.card, .night_mode.card, .nightMode .card, .night_mode .card {
-  color: #f0efec;
-  background: #1a1a19;
+  color: white;
+  background: rgb(44, 44, 44);
 }
 .nightMode .rs-root, .night_mode .rs-root {
-  --surface: #1a1a19;
-  --text: #f0efec;
-  --muted: #c3c2b7;
-  --line: #3987e5;
+  --surface: rgb(44, 44, 44);
+  --text: white;
+  --muted: rgb(180, 180, 180);
+  --accent: rgb(140, 140, 140);
+  --line: rgb(120, 180, 215);
+  --head: rgb(20, 20, 20);
   --grid: rgba(255, 255, 255, 0.12);
-  --border: rgba(255, 255, 255, 0.2);
+  --border: rgb(180, 180, 180);
   --stripe: rgba(255, 255, 255, 0.04);
-  --on: rgba(57, 135, 229, 0.25);
+  --on: rgba(120, 180, 215, 0.3);
 }
 .rs-root button, .rs-root select {
   font: inherit;
@@ -123,7 +134,7 @@
   stroke-width: 2;
 }
 .rs-cross {
-  stroke: var(--muted);
+  stroke: var(--accent);
   stroke-width: 1;
   opacity: 0.6;
 }
@@ -165,16 +176,16 @@
 .rs-table th {
   position: sticky;
   top: 0;
-  background: var(--surface);
-  color: var(--muted);
+  background: var(--head);
+  color: var(--text);
   font-weight: 600;
-  text-align: right;
+  text-align: center;
   vertical-align: bottom;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   min-width: 4em;
 }
-.rs-table th:first-child, .rs-table td.rs-date, .rs-table td.rs-text {
+.rs-table td.rs-date, .rs-table td.rs-text {
   text-align: left;
 }
 .rs-table td {
@@ -190,7 +201,7 @@
 .rs-table tbody tr:nth-child(even) {
   background: var(--stripe);
 }
-.rs-table .rs-computed {
+.rs-table td.rs-computed {
   color: var(--muted);
 }
 .rs-table tbody tr.rs-picked {

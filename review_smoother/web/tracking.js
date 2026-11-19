@@ -251,7 +251,7 @@
     var row = el("tr");
     row.appendChild(el("th", "", S.date));
     t.columns.forEach(function (name, c) {
-      row.appendChild(el("th", t.computed[c] ? "rs-computed" : "", name));
+      row.appendChild(el("th", t.computed[c] ? "rs-computed" : t.keys[c] === "remark" ? "rs-text" : "", name));
     });
     head.appendChild(row);
     tableNode.appendChild(head);
