@@ -53,7 +53,7 @@
   }
 
   // Totals computed from the settings, added after a table's own columns
-  // (shown greyed, never stored).
+  // (shown greyed, never stored); the remark always last.
   function addTotals(t) {
     var keyOf = [];
     var found = {};
@@ -62,21 +62,38 @@
       keyOf[c] = key;
       if (key) found[key] = true;
     });
-    if (!found.tomorrow || !found.floor || !found.slope_x10000) return;
-    t.computed = t.columns.length;
-    S.totals.forEach(function (total) {
-      t.columns.push(total[1]);
+    var withTotals = found.tomorrow && found.floor && found.slope_x10000;
+    var order = [];
+    var last = [];
+    keyOf.forEach(function (key, c) {
+      (key === "remark" ? last : order).push(c);
     });
-    t.rows.forEach(function (row) {
-      var set = {};
-      keyOf.forEach(function (key, c) {
-        if (key) set[key] = row[c + 1];
-      });
-      var sums = curveTotals(set);
+    var columns = order.map(function (c) { return t.columns[c]; });
+    t.computed = {};
+    if (withTotals) {
       S.totals.forEach(function (total) {
-        row.push(sums ? sums[total[0]] : null);
+        t.computed[columns.length] = true;
+        columns.push(total[1]);
       });
+    }
+    last.forEach(function (c) { columns.push(t.columns[c]); });
+    t.rows = t.rows.map(function (row) {
+      var values = [row[0]];
+      order.forEach(function (c) { values.push(row[c + 1]); });
+      if (withTotals) {
+        var set = {};
+        keyOf.forEach(function (key, c) {
+          if (key) set[key] = row[c + 1];
+        });
+        var sums = curveTotals(set);
+        S.totals.forEach(function (total) {
+          values.push(sums ? sums[total[0]] : null);
+        });
+      }
+      last.forEach(function (c) { values.push(row[c + 1]); });
+      return values;
     });
+    t.columns = columns;
   }
   tables.forEach(addTotals);
 
@@ -218,7 +235,7 @@
     var row = el("tr");
     row.appendChild(el("th", "", S.date));
     t.columns.forEach(function (name, c) {
-      row.appendChild(el("th", c >= t.computed ? "rs-computed" : "", name));
+      row.appendChild(el("th", t.computed[c] ? "rs-computed" : "", name));
     });
     head.appendChild(row);
     tableNode.appendChild(head);
@@ -231,7 +248,7 @@
       for (var c = 1; c <= t.columns.length; c++) {
         var value = values[c];
         var cls = typeof value === "number" ? "rs-num" : "rs-text";
-        if (c - 1 >= t.computed) cls += " rs-computed";
+        if (t.computed[c - 1]) cls += " rs-computed";
         tr.appendChild(el("td", cls, format(value)));
       }
       body.appendChild(tr);

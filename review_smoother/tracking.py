@@ -76,8 +76,8 @@ def card_strings(tr) -> Dict[str, Any]:
             [366, tr("tracking_year")],
             [0, tr("tracking_all")],
         ],
-        # Normalised column label -> setting key, to compute the totals.
-        "keys": {label: key for label, key in known_labels().items() if key != "remark"},
+        # Normalised column label -> key: totals, remark shown last.
+        "keys": known_labels(),
         "totals": [
             [31, tr("tracking_total_month")],
             [90, tr("tracking_total_quarter")],
@@ -130,11 +130,12 @@ def dated_rows(values: Sequence[Sequence[Any]], last_day) -> List[List[Any]]:
 # values prefilled and editable, plus a remark; not automatic).
 #
 # The custom curve's settings, by key (asked 2026-11-18: only what is set
-# is kept; totals are computed by the card, new and learned cards are in
-# Anki's own statistics). A table's columns are matched to keys by their
-# label (any language, spaces and case ignored; `i18n` keys
-# `tracking_col_<key>`, the names of the Review Smoother dialog, plus
-# ALIASES: the author's spreadsheet headers and earlier names).
+# is kept; totals are computed by the card), plus the deck's new cards of
+# the day and learned cards (asked back 2026-11-19), the remark last. A
+# table's columns are matched to keys by their label (any language, spaces
+# and case ignored; `i18n` keys `tracking_col_<key>`, the names of the
+# Review Smoother dialog, plus ALIASES: the author's spreadsheet headers and
+# earlier names).
 COLUMN_KEYS = (
     "tomorrow",
     "drop_day2",
@@ -142,6 +143,8 @@ COLUMN_KEYS = (
     "floor",
     "strength",
     "slope_x10000",
+    "new_cards",
+    "learned",
     "remark",
 )
 ALIASES = {
@@ -156,6 +159,8 @@ ALIASES = {
         "Coefficient b",
     ),
     "slope_x10000": ("Coefficient a × 10 000", "Coefficient a × 10,000"),
+    "new_cards": ("Nouvelles cartes apprises",),
+    "learned": ("Total paquet",),
 }
 # Columns of the table of a deck tracked for the first time.
 DEFAULT_COLUMNS = COLUMN_KEYS
@@ -187,9 +192,12 @@ def new_history(tr) -> Dict[str, Any]:
     return history([table(tr("tracking_default_table"), columns, [])])
 
 
-def day_values(settings) -> Dict[str, Any]:
-    """The day's values: the custom curve's settings."""
+def day_values(settings, new_cards: Any = None, learned: Any = None) -> Dict[str, Any]:
+    """The day's values: the custom curve's settings, the deck's new cards
+    of the day (first reviewed today) and learned cards (not new)."""
     return {
+        "new_cards": new_cards,
+        "learned": learned,
         "tomorrow": settings.tomorrow,
         "drop_day2": settings.drop_day2,
         "drop_day3": settings.drop_day3,
@@ -222,7 +230,8 @@ def form_fields(
                 unknown.append(((t_index, c_index), f"{column} ({t['title']})", existing))
             elif key not in seen:
                 seen.add(key)
-                fields.append((key, column, computed.get(key, existing)))
+                value = computed.get(key)
+                fields.append((key, column, existing if value is None else value))
     if "remark" not in seen:
         fields.append(("remark", None, None))  # labelled by the dialog
     return fields + unknown

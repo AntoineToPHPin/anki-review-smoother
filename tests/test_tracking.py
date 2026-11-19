@@ -3,6 +3,7 @@ from datetime import date
 
 from review_smoother import tracking
 from review_smoother.i18n import Translator
+from review_smoother.smoothing import CurveSettings
 
 
 class FieldTest(unittest.TestCase):
@@ -68,16 +69,29 @@ class RecordTest(unittest.TestCase):
                 "Nombre révision lendemain", "Écart entre le jour 1 et le jour 2",
                 "Écart entre le jour 2 et le jour 3", "Nombre révisions à long terme",
                 "Force de la mémoire", "Coefficient a × 10 000", "Coefficient b",
-                "Remarque", "Total paquet",
+                "Remarque", "Total paquet", "Nouvelles cartes apprises", "Humeur",
             ]),
             ["tomorrow", "drop_day2", "drop_day3", "floor", "strength", "slope_x10000",
-             "floor", "remark", None],
+             "floor", "remark", "learned", "new_cards", None],
         )
 
     def test_the_settings(self):
         values = dict((k, v) for k, _, v in tracking.form_fields(self.data, "2026-11-18", self.computed))
         new = tracking.record(self.data, "2026-11-18", values, "Remarque")
         self.assertEqual(new["tables"][0]["rows"][-1], ["2026-11-18", 55, 4, 3, 13, 19.01, 194, None])
+
+    def test_deck_counts(self):
+        data = tracking.history([tracking.table(
+            "Suivi", ["Cartes à J90", "Nouvelles cartes du jour", "Cartes apprises du paquet", "Remarque"],
+            [["2026-11-18", 13, 2, 12947, None]],
+        )])
+        computed = tracking.day_values(CurveSettings(55, 4, 3, 13, 19.01, 0.0194), 10, 12957)
+        values = dict((k, v) for k, _, v in tracking.form_fields(data, "2026-11-19", computed))
+        new = tracking.record(data, "2026-11-19", values, "Remarque")
+        self.assertEqual(new["tables"][0]["rows"][-1], ["2026-11-19", 13, 10, 12957, None])
+        # Not counted (None): what the day's row holds is kept.
+        fields = tracking.form_fields(data, "2026-11-18", tracking.day_values(CurveSettings(55, 4, 3, 13, 19.01, 0.0194)))
+        self.assertIn(("learned", "Cartes apprises du paquet", 12947), fields)
 
     def test_same_day_replaced_and_remark_kept(self):
         values = {"remark": "Correction", "floor": 12}

@@ -192,7 +192,6 @@
 }
 .rs-table .rs-computed {
   color: var(--muted);
-  font-style: italic;
 }
 .rs-table tbody tr.rs-picked {
   background: var(--on);

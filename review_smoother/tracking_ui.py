@@ -37,6 +37,16 @@ def anki_day(col: Collection) -> str:
     return datetime.fromtimestamp(col.sched.day_cutoff - 86400).date().isoformat()
 
 
+def deck_counts(col: Collection, deck: str) -> tuple:
+    """The deck's (and subdecks') new cards of the day (first reviewed
+    today, as Anki's `introduced:1`) and learned cards (not new); the
+    spreadsheet's « Nouvelles cartes apprises » and « Total paquet »."""
+    search = col.build_search_string(SearchNode(deck=deck))
+    new_cards = len(col.find_cards(f"{search} introduced:1"))
+    learned = len(col.find_cards(f"{search} -is:new"))
+    return new_cards, learned
+
+
 def find_model(col: Collection) -> Optional[NotetypeDict]:
     """The tracking note type, whatever language created it."""
     for strings in STRINGS.values():
@@ -118,7 +128,7 @@ class TrackingDialog(QDialog):
         self.data = tracking.from_field(note.fields[1]) if note else tracking.new_history(tr)
         if not self.data.get("tables"):
             self.data = tracking.new_history(tr)
-        computed = tracking.day_values(settings)
+        computed = tracking.day_values(settings, *deck_counts(mw.col, deck))
         self.setWindowTitle(tr("tracking_title", deck=deck))
 
         comma = tr.lang == "fr"
