@@ -94,6 +94,9 @@
       return values;
     });
     t.columns = columns;
+    t.keys = order.map(function (c) { return keyOf[c]; })
+      .concat(withTotals ? S.totals.map(function () { return undefined; }) : [])
+      .concat(last.map(function (c) { return keyOf[c]; }));
   }
   tables.forEach(addTotals);
 
@@ -127,8 +130,9 @@
   }
   function store(key, value) {
     try {
-      if (value === undefined) return window.localStorage.getItem("rs-tracking-" + key);
-      window.localStorage.setItem("rs-tracking-" + key, value);
+      // "v2": choices remembered by name since 2026-11-19 (an index before).
+      if (value === undefined) return window.localStorage.getItem("rs-tracking-v2-" + key);
+      window.localStorage.setItem("rs-tracking-v2-" + key, value);
     } catch (e) {
       return null;
     }
@@ -147,7 +151,15 @@
     return result;
   }
 
-  var state = { table: +(store("table") || 0), range: +(store("range") || 0), column: {} };
+  // Shown by default: new cards of the day over 3 months (author, 2026-11-19).
+  var DEFAULT_KEY = "new_cards";
+  var DEFAULT_RANGE = 92;
+  var storedRange = store("range");
+  var state = {
+    table: +(store("table") || 0),
+    range: storedRange === null || storedRange === undefined ? DEFAULT_RANGE : +storedRange,
+    column: {},
+  };
   if (!(state.table < tables.length)) state.table = 0;
 
   root.innerHTML = "";
@@ -174,7 +186,7 @@
 
   select.addEventListener("change", function () {
     state.column[state.table] = +select.value;
-    store("column-" + state.table, select.value);
+    store("column-" + state.table, current().columns[+select.value]);
     drawChart();
   });
 
@@ -221,7 +233,11 @@
       select.appendChild(option);
     });
     var saved = state.column[state.table];
-    if (saved === undefined) saved = +(store("column-" + state.table) || columns[0]);
+    if (saved === undefined) {
+      saved = t.columns.indexOf(store("column-" + state.table));
+      if (saved < 0) saved = t.keys.indexOf(DEFAULT_KEY);
+      if (saved < 0) saved = columns[0];
+    }
     if (columns.indexOf(saved) < 0) saved = columns[0];
     state.column[state.table] = saved;
     select.value = String(saved);
