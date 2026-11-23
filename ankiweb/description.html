@@ -1,0 +1,21 @@
+<b>Review Smoother</b> reshapes a deck's upcoming review forecast into a smooth, descending curve: 4 reviews a day, then 3, then 2, instead of a jagged 5, 2, 4, 3…
+
+It only changes when cards are due. The number of cards stays the same, intervals are kept, and nothing happens until you confirm. Applying is a single step that <b>Edit › Undo</b> reverts.
+
+<b>Smoothing a deck</b>
+Open <b>Tools › Review Smoother…</b>, or click the <b>Review Smoother</b> button next to the <i>Future Due</i> graph in the Statistics window. Pick a deck and a period (1 month, 3 months, 1 year, 2 years, or any number of days). You see the forecast before and after, in graphs styled like Anki's <i>Future Due</i> graph, with what moves highlighted.
+<ul>
+<li><b>Regular staircase</b> (default): the lowest curve reachable by advancing cards only, stepping down one card at a time, each level lasting at least as long as the one above it.</li>
+<li><b>Custom curve</b>: you set tomorrow's cards, the drops to day 2 and day 3, the cards on day 90, a memory strength (a forgetting curve from day 3 to day 90) and the slope after day 90. Cards are advanced or postponed to match it.</li>
+</ul>
+Moves are kept short relative to each card's interval, as few cards as possible are moved, and sibling cards are kept off the same day. Today's, overdue, new, learning, suspended and buried cards are never touched.
+
+<b>Repositioning new cards</b>
+<b>Tools › Reposition new cards…</b> numbers a deck's new cards with a preview. Unlike Anki's own Reposition, every card gets its own position (siblings included), shuffling mixes cards rather than notes, and siblings are kept apart so they are not introduced on the same day. A "by blocks" mode moves the cards of each block of positions up to the start of their block.
+
+<b>Tracking the custom curve</b>
+One click records the day's curve settings, the deck's new cards of the day, its learned cards and a remark in a tracking note. The note syncs like any note, so you can read it on AnkiDroid too: its card shows a graph and a table of every day.
+
+The interface is in English and French, following Anki's language.
+
+Source code, details and issues: <a href="https://github.com/AntoineToPHPin/anki-review-smoother">github.com/AntoineToPHPin/anki-review-smoother</a> (MIT license).

@@ -76,6 +76,7 @@ The settings are in **Tools › Add-ons › Review Smoother › Config**, descri
 - `review_smoother/` is the add-on folder, the one installed in Anki's `addons21`. `smoothing.py`, `reposition.py`, `tracking.py` and `i18n.py` do not import Anki, so they can be tested on their own.
 - Tests use the standard library only. Run `python -m unittest` from the repository root.
 - `tools/simulate.py` shows what smoothing would do on your real collection, without changing it. It needs Anki to be running with [AnkiConnect](https://ankiweb.net/shared/info/2055492159). Run `python tools/simulate.py "Deck::Name" --horizon 90`.
+- `python tools/build_ankiaddon.py` builds `dist/review_smoother-<version>.ankiaddon`, the file to upload to AnkiWeb or to install with **Tools › Add-ons › Install from file…**.
 - The code targets Anki 26.09 (Python 3.13) and stays compatible with Python 3.9.
 
 ## License
