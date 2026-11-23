@@ -83,6 +83,12 @@ def card_strings(tr) -> Dict[str, Any]:
             [90, tr("tracking_total_quarter")],
             [365, tr("tracking_total_year")],
         ],
+        # Statistics of the shown range; {value}, {days} filled in by the card.
+        "mean": tr("tracking_mean", value="{value}"),
+        "median": tr("tracking_median", value="{value}"),
+        "trend": tr("tracking_trend"),
+        "moving": tr("tracking_moving", days="{days}"),
+        "regression": tr("tracking_regression", value="{value}"),
         "empty": tr("tracking_empty"),
         "invalid": tr("tracking_invalid"),
     }

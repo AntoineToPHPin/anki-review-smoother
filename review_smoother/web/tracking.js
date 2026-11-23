@@ -101,6 +101,9 @@
   tables.forEach(addTotals);
 
   var numberFormat = new Intl.NumberFormat(S.locale, { maximumFractionDigits: 4 });
+  var statFormat = new Intl.NumberFormat(S.locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  var slopeFormat = new Intl.NumberFormat(S.locale, { maximumFractionDigits: 2 });
+  var wholeSlopeFormat = new Intl.NumberFormat(S.locale, { maximumFractionDigits: 0 });
   var dateFormat = new Intl.DateTimeFormat(S.locale, {
     day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC",
   });
@@ -156,6 +159,7 @@
   var DEFAULT_RANGE = 92;
   var storedRange = store("range");
   var state = {
+    trend: store("trend") !== "0",
     table: +(store("table") || 0),
     range: storedRange === null || storedRange === undefined ? DEFAULT_RANGE : +storedRange,
     column: {},
@@ -169,11 +173,13 @@
   var chart = el("div", "rs-chart");
   var tip = el("div", "rs-tip");
   var tableWrap = el("div", "rs-table");
+  var legend = el("div", "rs-legend");
   if (tables.length > 1) root.appendChild(tabs);
   root.appendChild(controls);
   root.appendChild(headline);
   chart.appendChild(tip);
   root.appendChild(chart);
+  root.appendChild(legend);
   root.appendChild(tableWrap);
 
   var select = el("select");
@@ -181,8 +187,27 @@
   label.appendChild(el("span", "", S.column));
   label.appendChild(select);
   var ranges = el("div", "rs-ranges");
+  var trendButton = el("button", "", S.trend);
+  trendButton.type = "button";
+  var buttons = el("div", "rs-ranges");
+  buttons.appendChild(ranges);
+  buttons.appendChild(trendButton);
   controls.appendChild(label);
-  controls.appendChild(ranges);
+  controls.appendChild(buttons);
+
+  // Mean, median, moving average and trend line (asked 2026-11-23): over
+  // the range shown; the trend shown or hidden by its button (remembered).
+  function showTrendButton() {
+    trendButton.className = state.trend ? "rs-on" : "";
+    trendButton.setAttribute("aria-pressed", state.trend ? "true" : "false");
+  }
+  trendButton.addEventListener("click", function () {
+    state.trend = !state.trend;
+    store("trend", state.trend ? "1" : "0");
+    showTrendButton();
+    drawChart();
+  });
+  showTrendButton();
 
   select.addEventListener("change", function () {
     state.column[state.table] = +select.value;
@@ -310,28 +335,110 @@
     });
   }
 
+  // Days of the moving average: a week over 1 or 3 months, a month beyond.
+  function movingDays() {
+    return state.range && state.range <= 92 ? 7 : 30;
+  }
+
+  // The shown range's days, each with its value and its moving average
+  // (mean of the known values of the `movingDays()` days ending there, taken
+  // from the whole history, so the range's first days have one too; none
+  // while fewer than half those days are known).
   function points() {
     var t = current();
     var c = state.column[state.table] + 1;
-    var list = [];
-    var last = t.rows.length ? time(t.rows[t.rows.length - 1][0]) : 0;
-    var from = state.range ? last - (state.range - 1) * DAY : -Infinity;
+    var all = [];
     t.rows.forEach(function (row) {
-      var at = time(row[0]);
-      if (at >= from) list.push({ t: at, v: typeof row[c] === "number" ? row[c] : null });
+      all.push({ t: time(row[0]), v: typeof row[c] === "number" ? row[c] : null });
     });
-    return list;
+    var days = movingDays();
+    var known = all.filter(function (p) {
+      return p.v !== null;
+    });
+    var first = 0;
+    var next = 0;
+    var sum = 0;
+    all.forEach(function (p) {
+      while (next < known.length && known[next].t <= p.t) sum += known[next++].v;
+      while (first < next && known[first].t <= p.t - days * DAY) sum -= known[first++].v;
+      var count = next - first;
+      p.avg = count && count * 2 >= days ? sum / count : null;
+    });
+    var last = all.length ? all[all.length - 1].t : 0;
+    var from = state.range ? last - (state.range - 1) * DAY : -Infinity;
+    return all.filter(function (p) {
+      return p.t >= from;
+    });
+  }
+
+  function median(values) {
+    var sorted = values.slice().sort(function (a, b) {
+      return a - b;
+    });
+    var middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  // Least squares line through the known points: value = a + b x day.
+  function regression(known) {
+    var n = known.length;
+    if (n < 2) return null;
+    var mx = 0;
+    var my = 0;
+    known.forEach(function (p) {
+      mx += p.t / DAY / n;
+      my += p.v / n;
+    });
+    var sxy = 0;
+    var sxx = 0;
+    known.forEach(function (p) {
+      var dx = p.t / DAY - mx;
+      sxy += dx * (p.v - my);
+      sxx += dx * dx;
+    });
+    if (!sxx) return null;
+    var b = sxy / sxx;
+    return {
+      perDay: b,
+      at: function (t) {
+        return my + b * (t / DAY - mx);
+      },
+    };
   }
 
   function drawHeadline(list) {
     headline.innerHTML = "";
+    var values = [];
+    list.forEach(function (p) {
+      if (p.v !== null) values.push(p.v);
+    });
     for (var i = list.length - 1; i >= 0; i--) {
       if (list[i].v !== null) {
         headline.appendChild(el("span", "rs-value", format(list[i].v)));
         headline.appendChild(el("span", "rs-when", dateFormat.format(list[i].t)));
-        return;
+        break;
       }
     }
+    if (values.length > 1) {
+      var mean = values.reduce(function (a, b) {
+        return a + b;
+      }, 0) / values.length;
+      headline.appendChild(el("span", "rs-stats",
+        S.mean.replace("{value}", statFormat.format(mean)) + " \u00b7 " +
+        S.median.replace("{value}", statFormat.format(median(values)))));
+    }
+  }
+
+  // Shown with two series or more: the column, then each trend.
+  function drawLegend(items) {
+    legend.innerHTML = "";
+    if (items.length < 2) return;
+    items.forEach(function (item) {
+      var entry = el("span", "rs-key");
+      entry.appendChild(el("span", "rs-swatch " + item[0]));
+      entry.appendChild(document.createTextNode(item[1]));
+      legend.appendChild(entry);
+    });
   }
 
   function drawChart() {
@@ -340,10 +447,13 @@
     var old = chart.querySelector("svg");
     if (old) chart.removeChild(old);
     tip.style.display = "none";
+    drawLegend([]);
     var known = list.filter(function (p) {
       return p.v !== null;
     });
     if (!known.length) return;
+    var trend = state.trend && known.length > 1;
+    var line = trend ? regression(known) : null;
 
     var width = Math.max(chart.clientWidth || 600, 280);
     var height = 220;
@@ -354,6 +464,12 @@
       low = Math.min(low, p.v);
       high = Math.max(high, p.v);
     });
+    if (line) {
+      [list[0].t, list[list.length - 1].t].forEach(function (t) {
+        low = Math.min(low, line.at(t));
+        high = Math.max(high, line.at(t));
+      });
+    }
     if (low === high) {
       low -= 1;
       high += 1;
@@ -404,7 +520,34 @@
       path += (pen ? "L" : "M") + x(p.t).toFixed(1) + "," + y(p.v).toFixed(1);
       pen = true;
     });
-    svg("path", { d: path, class: "rs-line" }, graph);
+    svg("path", { d: path, class: trend ? "rs-line rs-raw" : "rs-line" }, graph);
+    var items = [["rs-raw", current().columns[state.column[state.table]]]];
+    if (trend) {
+      var avgPath = "";
+      pen = false;
+      list.forEach(function (p) {
+        if (p.avg === null) {
+          pen = false;
+          return;
+        }
+        avgPath += (pen ? "L" : "M") + x(p.t).toFixed(1) + "," + y(p.avg).toFixed(1);
+        pen = true;
+      });
+      if (avgPath) {
+        svg("path", { d: avgPath, class: "rs-avg" }, graph);
+        items.push(["rs-avg", S.moving.replace("{days}", movingDays())]);
+      }
+      if (line) {
+        svg("line", {
+          x1: x(start), y1: y(line.at(start)), x2: x(end), y2: y(line.at(end)), class: "rs-reg",
+        }, graph);
+        var perMonth = line.perDay * 365.25 / 12;
+        var shown = (Math.abs(perMonth) >= 10 ? wholeSlopeFormat : slopeFormat).format(perMonth);
+        if (perMonth > 0 && shown !== "0") shown = "+" + shown;
+        items.push(["rs-reg", S.regression.replace("{value}", shown)]);
+      }
+    }
+    drawLegend(items);
     var lastPoint = known[known.length - 1];
     svg("circle", { cx: x(lastPoint.t), cy: y(lastPoint.v), r: 4, class: "rs-dot" }, graph);
 
@@ -440,6 +583,9 @@
       tip.innerHTML = "";
       tip.appendChild(el("strong", "", format(best.v)));
       tip.appendChild(el("span", "", dateFormat.format(best.t)));
+      if (trend && best.avg !== null) {
+        tip.appendChild(el("span", "rs-tip-avg", "~ " + statFormat.format(best.avg)));
+      }
       tip.style.display = "block";
       var left = (cx / width) * box.width;
       var room = chart.clientWidth - tip.offsetWidth;
