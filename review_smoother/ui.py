@@ -54,8 +54,9 @@ from .smoothing import (
 WEB_DIR = Path(__file__).parent / "web"
 
 # Shortcuts for the horizon, in days: the periods of the Future Due graph in
-# Anki's Statistics window, except 30 days for a month (Anki uses 31).
-RANGES = (("range_month", 30), ("range_three_months", 90), ("range_year", 365),
+# Anki's Statistics window: 31 days for a month, as Anki (author, 2026-11-23:
+# to compare the custom curve's total with the Statistics; 30 before).
+RANGES = (("range_month", 31), ("range_three_months", 90), ("range_year", 365),
           ("range_two_years", 730))
 
 # Size and position of the dialog, remembered by Anki between openings.
