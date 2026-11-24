@@ -298,6 +298,15 @@
     }
     tableNode.appendChild(body);
     tableWrap.appendChild(tableNode);
+    fitTable();
+  }
+
+  // No horizontal scroll bar for a few pixels of overflow (asked
+  // 2026-11-24): what is hidden then is at most the last cell's right
+  // padding (8px, tracking.css).
+  function fitTable() {
+    tableWrap.style.overflowX = "";
+    tableWrap.style.overflowX = tableWrap.scrollWidth - tableWrap.clientWidth <= 8 ? "hidden" : "auto";
   }
 
   // Round tick values covering [low, high], about `count` of them.
@@ -625,6 +634,8 @@
   }
 
   show();
+  // Inter (tracking.css) may load after the table is drawn.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitTable);
   var pending = false;
   window.addEventListener("resize", function () {
     if (pending || !document.body.contains(chart)) return;
@@ -632,6 +643,7 @@
     setTimeout(function () {
       pending = false;
       drawChart();
+      fitTable();
     }, 100);
   });
 })();
