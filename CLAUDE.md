@@ -59,7 +59,7 @@ The author discusses in French; everything in the repo (code, comments, README, 
 
 ## Local dev install
 
-On the author's Windows machine, `%APPDATA%\Anki2\addons21\review_smoother` is a **junction** to this repo's `review_smoother/` folder: code changes apply after restarting Anki. Anki writes `meta.json` (user config overrides) into it — git-ignored. (`cmd /c mklink /J` fails from Git Bash; use PowerShell `New-Item -ItemType Junction`.)
+On the author's Windows machine, `%APPDATA%\Anki2\addons21\review_smoother` is a **junction** to this repo's `review_smoother/` folder: code changes apply after restarting Anki. Until then, mind the tracking card: `ensure_model` rebuilds it from `web/tracking.js` read from disk (new) and `card_strings` from the Python loaded at startup (old), so a string the new JS needs is missing and the card breaks (2026-11-24: recording a day removed the graph, `S.mean` undefined). After changing the card, restart Anki or push the template through AnkiConnect again. Anki writes `meta.json` (user config overrides) into it — git-ignored. (`cmd /c mklink /J` fails from Git Bash; use PowerShell `New-Item -ItemType Junction`.)
 
 ## Environment gotchas
 
